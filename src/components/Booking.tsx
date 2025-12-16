@@ -1,0 +1,1004 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { supabase, isSupabaseConfigured } from '@/lib/supabase'
+import Image from 'next/image'
+import SeatSelector from './SeatSelector'
+
+export default function Booking() {
+    const [formData, setFormData] = useState({
+        name: '',
+        email: '',
+        phone: '',
+    })
+    const [formErrors, setFormErrors] = useState({
+        name: '',
+        email: '',
+        phone: '',
+    })
+    const [submitted, setSubmitted] = useState(false)
+    const [registrationId, setRegistrationId] = useState<string | null>(null)
+    const [paymentStatus, setPaymentStatus] = useState<'pending' | 'verified' | 'sent'>('pending')
+    const [loading, setLoading] = useState(false)
+    const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
+    const [confirmedSeat, setConfirmedSeat] = useState<number | null>(null)
+    const [confirmingSeat, setConfirmingSeat] = useState(false)
+    const [errorMessage, setErrorMessage] = useState<string | null>(null)
+    const [successMessage, setSuccessMessage] = useState<string | null>(null)
+    const [showCancelModal, setShowCancelModal] = useState(false)
+    const [showFormModal, setShowFormModal] = useState(false)
+    const [showQRModal, setShowQRModal] = useState(false)
+    const [copied, setCopied] = useState(false)
+    const [sessionId] = useState(() => {
+        if (typeof window !== 'undefined') {
+            let sid = sessionStorage.getItem('sessionId')
+            if (!sid) {
+                sid = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
+                sessionStorage.setItem('sessionId', sid)
+            }
+            return sid
+        }
+        return Math.random().toString(36).substring(2, 15)
+    })
+
+    const isConfigured = isSupabaseConfigured()
+    const bankAccount = process.env.NEXT_PUBLIC_BANK_ACCOUNT || '1234567890'
+    const bankName = process.env.NEXT_PUBLIC_BANK_NAME || 'Ngân hàng ABC'
+    
+    // Tạo nội dung chuyển khoản tự động dựa trên số ghế
+    const transferContent = confirmedSeat ? `workshoptnfvn${confirmedSeat}` : ''
+
+    useEffect(() => {
+        const savedId = localStorage.getItem('registrationId')
+        if (savedId) {
+            setRegistrationId(savedId)
+            setSubmitted(true)
+            checkPaymentStatus(savedId)
+        }
+    }, [])
+
+    // Theo dõi khi registrationId bị xóa khỏi localStorage
+    useEffect(() => {
+        if (!registrationId) return
+
+        const handleAutoCancelRegistration = async () => {
+            const currentId = registrationId
+            if (!currentId) return
+
+            try {
+                const { data: registrationData, error: regError } = await supabase
+                    .from('registrations')
+                    .select('seat_number')
+                    .eq('id', currentId)
+                    .single()
+
+                if (!regError && registrationData?.seat_number) {
+                    await supabase
+                        .from('seats')
+                        .update({
+                            status: 'available',
+                            registration_id: null,
+                            selected_by: null,
+                            selected_at: null,
+                            expires_at: null
+                        })
+                        .eq('seat_number', registrationData.seat_number)
+
+                    await supabase
+                        .from('registrations')
+                        .delete()
+                        .eq('id', currentId)
+                }
+
+                setRegistrationId(null)
+                setSubmitted(false)
+                setPaymentStatus('pending')
+                setFormData({
+                    name: '',
+                    email: '',
+                    phone: '',
+                })
+                setSelectedSeat(null)
+                setConfirmedSeat(null)
+                setShowQRModal(false)
+                setShowFormModal(false)
+            } catch (error: any) {
+                console.error('Error auto-canceling registration:', error)
+            }
+        }
+
+        const handleStorageChange = (e: StorageEvent) => {
+            if (e.key === 'registrationId') {
+                if (!e.newValue && registrationId) {
+                    handleAutoCancelRegistration()
+                } else if (e.newValue && e.newValue !== registrationId) {
+                    setRegistrationId(e.newValue)
+                    setSubmitted(true)
+                    checkPaymentStatus(e.newValue)
+                }
+            }
+        }
+
+        const checkInterval = setInterval(() => {
+            const currentId = localStorage.getItem('registrationId')
+            if (!currentId && registrationId) {
+                handleAutoCancelRegistration()
+            }
+        }, 1000)
+
+        window.addEventListener('storage', handleStorageChange)
+
+        return () => {
+            window.removeEventListener('storage', handleStorageChange)
+            clearInterval(checkInterval)
+        }
+    }, [registrationId])
+
+    useEffect(() => {
+        const releaseConfirmedSeat = async () => {
+            if (confirmedSeat && !submitted) {
+                try {
+                    await fetch('/api/release-seat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            seat_number: confirmedSeat,
+                            session_id: sessionId
+                        }),
+                        keepalive: true
+                    }).catch(() => { })
+                } catch (err) {
+                    console.error('Error releasing seat:', err)
+                }
+            }
+        }
+
+        const handleBeforeUnload = () => {
+            if (confirmedSeat && !submitted) {
+                releaseConfirmedSeat()
+            }
+        }
+
+        window.addEventListener('beforeunload', handleBeforeUnload)
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload)
+            if (confirmedSeat && !submitted) {
+                releaseConfirmedSeat()
+            }
+        }
+    }, [confirmedSeat, submitted, sessionId])
+
+    const checkPaymentStatus = async (id: string) => {
+        const { data, error } = await supabase
+            .from('registrations')
+            .select('payment_status')
+            .eq('id', id)
+            .single()
+
+        if (data) {
+            setPaymentStatus(data.payment_status)
+        }
+    }
+
+    const handleConfirmSeat = async () => {
+        if (!selectedSeat) {
+            setErrorMessage('Vui lòng chọn ghế trước')
+            setTimeout(() => setErrorMessage(null), 5000)
+            return
+        }
+
+        setConfirmingSeat(true)
+        setErrorMessage(null)
+        try {
+            // Sử dụng API route để đảm bảo atomic operation
+            const response = await fetch('/api/select-seat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    seat_number: selectedSeat,
+                    session_id: sessionId,
+                    old_seat_number: confirmedSeat && confirmedSeat !== selectedSeat ? confirmedSeat : null
+                }),
+            })
+
+            const result = await response.json()
+
+            if (!response.ok) {
+                // Xử lý các lỗi cụ thể
+                if (result.code === 'SEAT_BOOKED' || result.code === 'SEAT_SELECTED' || result.code === 'SEAT_ALREADY_SELECTED') {
+                    setErrorMessage(result.error)
+                    setSelectedSeat(null)
+                } else {
+                    throw new Error(result.error || 'Lỗi khi chọn ghế')
+                }
+            } else {
+                // Thành công
+                setConfirmedSeat(selectedSeat)
+                setSuccessMessage(result.message || `Đã xác nhận ghế số ${selectedSeat}. Vui lòng điền thông tin.`)
+                setShowFormModal(true)
+                
+                // Force reload seats sau khi chọn thành công để đảm bảo sync
+                // Điều này giúp các tab khác cập nhật ngay lập tức
+                setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent('reload-seats'))
+                }, 500)
+            }
+        } catch (error: any) {
+            setErrorMessage('Lỗi khi xác nhận ghế: ' + error.message)
+        } finally {
+            setConfirmingSeat(false)
+            setTimeout(() => setErrorMessage(null), 5000)
+            setTimeout(() => setSuccessMessage(null), 5000)
+        }
+    }
+
+    const handleCancelRegistration = () => {
+        setShowCancelModal(true)
+    }
+
+    const handleCloseQRModal = () => {
+        setShowQRModal(false)
+    }
+
+    const handleCancelFromQR = () => {
+        setShowCancelModal(true)
+    }
+
+    const confirmCancelRegistration = async () => {
+        if (!registrationId) return
+
+        setLoading(true)
+        setShowCancelModal(false)
+        try {
+            const { data: registrationData, error: regError } = await supabase
+                .from('registrations')
+                .select('seat_number')
+                .eq('id', registrationId)
+                .single()
+
+            if (regError) {
+                throw new Error('Không tìm thấy đăng ký')
+            }
+
+            if (registrationData?.seat_number) {
+                const { error: seatError } = await supabase
+                    .from('seats')
+                    .update({
+                        status: 'available',
+                        registration_id: null,
+                        selected_by: null,
+                        selected_at: null,
+                        expires_at: null
+                    })
+                    .eq('seat_number', registrationData.seat_number)
+
+                if (seatError) {
+                    console.error('Error releasing seat:', seatError)
+                }
+            }
+
+            const { error: deleteError } = await supabase
+                .from('registrations')
+                .delete()
+                .eq('id', registrationId)
+
+            if (deleteError) {
+                throw deleteError
+            }
+
+            setRegistrationId(null)
+            setSubmitted(false)
+            setPaymentStatus('pending')
+            setFormData({
+                name: '',
+                email: '',
+                phone: '',
+            })
+            setSelectedSeat(null)
+            setConfirmedSeat(null)
+            
+            localStorage.removeItem('registrationId')
+
+            setSuccessMessage('Đã hủy vé thành công. Ghế đã được giải phóng.')
+        } catch (error: any) {
+            setErrorMessage('Có lỗi xảy ra khi hủy vé: ' + error.message)
+        } finally {
+            setLoading(false)
+            setShowFormModal(false)
+            setShowQRModal(false)
+            setTimeout(() => setErrorMessage(null), 5000)
+            setTimeout(() => setSuccessMessage(null), 5000)
+        }
+    }
+
+    const validateForm = () => {
+        const errors = {
+            name: '',
+            email: '',
+            phone: '',
+        }
+        let isValid = true
+
+        if (!formData.name.trim()) {
+            errors.name = 'Vui lòng điền vào trường này.'
+            isValid = false
+        }
+
+        if (!formData.email.trim()) {
+            errors.email = 'Vui lòng điền vào trường này.'
+            isValid = false
+        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+            errors.email = 'Email không hợp lệ.'
+            isValid = false
+        }
+
+        if (!formData.phone.trim()) {
+            errors.phone = 'Vui lòng điền vào trường này.'
+            isValid = false
+        } else if (!/^[0-9]{10,11}$/.test(formData.phone.replace(/\s/g, ''))) {
+            errors.phone = 'Số điện thoại không hợp lệ.'
+            isValid = false
+        }
+
+        setFormErrors(errors)
+        return isValid
+    }
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault()
+
+        if (!validateForm()) {
+            setErrorMessage('Vui lòng điền đầy đủ thông tin hợp lệ.')
+            setTimeout(() => setErrorMessage(null), 5000)
+            return
+        }
+
+        if (!confirmedSeat) {
+            setErrorMessage('Vui lòng xác nhận ghế trước khi đăng ký')
+            setTimeout(() => setErrorMessage(null), 5000)
+            return
+        }
+
+        setLoading(true)
+        setErrorMessage(null)
+
+        try {
+            const { data: seatData, error: seatCheckError } = await supabase
+                .from('seats')
+                .select('status, selected_by')
+                .eq('seat_number', confirmedSeat)
+                .single()
+
+            if (seatCheckError || !seatData) {
+                throw new Error('Không tìm thấy ghế')
+            }
+
+            if (seatData.status === 'booked') {
+                setErrorMessage('Ghế này đã được đặt. Vui lòng chọn ghế khác.')
+                setConfirmedSeat(null)
+                setSelectedSeat(null)
+                setLoading(false)
+                setTimeout(() => setErrorMessage(null), 5000)
+                return
+            }
+
+            if (seatData.status !== 'selected' || seatData.selected_by !== sessionId) {
+                setErrorMessage('Ghế này không còn thuộc về bạn. Vui lòng chọn ghế khác.')
+                setConfirmedSeat(null)
+                setSelectedSeat(null)
+                setLoading(false)
+                setTimeout(() => setErrorMessage(null), 5000)
+                return
+            }
+
+            // Kiểm tra xem email hoặc số điện thoại đã được sử dụng để đăng ký chưa
+            const { data: existingRegistrations, error: checkError } = await supabase
+                .from('registrations')
+                .select('id, email, phone, seat_number')
+                .or(`email.eq.${formData.email},phone.eq.${formData.phone}`)
+                .limit(1)
+
+            if (checkError && checkError.code !== 'PGRST116') {
+                throw checkError
+            }
+
+            if (existingRegistrations && existingRegistrations.length > 0) {
+                const existing = existingRegistrations[0]
+                const usedField = existing.email === formData.email ? 'email' : 'số điện thoại'
+                setErrorMessage(`Bạn đã đăng ký với ${usedField} này rồi. Mỗi người chỉ được đặt một vé.`)
+                setLoading(false)
+                setTimeout(() => setErrorMessage(null), 8000)
+                return
+            }
+
+            const registrationData: any = {
+                name: formData.name,
+                email: formData.email,
+                phone: formData.phone,
+                payment_status: 'pending',
+                seat_number: confirmedSeat
+            }
+
+            const { data, error } = await supabase
+                .from('registrations')
+                .insert([registrationData])
+                .select()
+                .single()
+
+            if (error) {
+                if (error.message.includes('workshop_date') && error.message.includes('not-null')) {
+                    throw new Error('Database chưa được cập nhật. Vui lòng chạy SQL: ALTER TABLE registrations ALTER COLUMN workshop_date DROP NOT NULL;')
+                }
+                throw error
+            }
+
+            if (data) {
+                const { error: seatError } = await supabase
+                    .from('seats')
+                    .update({
+                        status: 'booked',
+                        registration_id: data.id,
+                        selected_by: null,
+                        selected_at: null,
+                        expires_at: null
+                    })
+                    .eq('seat_number', confirmedSeat)
+
+                if (seatError) {
+                    console.error('Error booking seat:', seatError)
+                }
+
+                setRegistrationId(data.id)
+                setSubmitted(true)
+                localStorage.setItem('registrationId', data.id)
+                
+                setShowFormModal(false)
+                setShowQRModal(true)
+            }
+        } catch (error: any) {
+            setErrorMessage('Có lỗi xảy ra: ' + error.message)
+        } finally {
+            setLoading(false)
+            setTimeout(() => setErrorMessage(null), 5000)
+        }
+    }
+
+    if (!isConfigured) {
+        return (
+            <section className="w-full min-h-screen bg-stripes md:bg-stripes-desktop text-black px-6 pt-20 pb-10 relative overflow-hidden flex flex-col justify-center items-center">
+                <div className="max-w-2xl mx-auto">
+                    <div className="bg-gray-50 rounded-lg p-8 border border-gray-200">
+                        <div className="text-center">
+                            <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-4">
+                                <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                            </div>
+                            <h1 className="text-3xl font-bold text-black mb-4">Cấu hình thiếu</h1>
+                            <p className="text-gray-600 mb-6">
+                                Ứng dụng chưa được cấu hình đầy đủ. Vui lòng tạo file <code className="bg-gray-100 px-2 py-1 rounded">.env.local</code> với các biến môi trường sau:
+                            </p>
+                            <div className="bg-gray-100 rounded-lg p-4 text-left mb-6">
+                                <pre className="text-sm text-gray-800">
+                                    {`NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
+                                </pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        )
+    }
+
+    return (
+        <>
+            <section className="w-full min-h-screen bg-stripes md:bg-stripes-desktop text-black px-4 md:px-6 pt-20 pb-10 relative overflow-hidden flex flex-col justify-center items-center">
+                <div className="max-w-2xl mx-auto w-full">
+                    <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-6 lg:p-8 w-full">
+                        <div className="text-center mb-8">
+                            <h1 className="text-4xl md:text-5xl font-bold text-black mb-2 tracking-tight">Đăng ký Workshop</h1>
+                            <p className="text-gray-600">Chọn ghế ngồi để bắt đầu đăng ký</p>
+                        </div>
+
+                        {errorMessage && (
+                            <div className="mb-6 bg-red-50 border border-red-200 rounded-md p-4 flex items-start">
+                                <svg className="w-5 h-5 text-red-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div className="flex-1">
+                                    <p className="text-sm text-red-800">{errorMessage}</p>
+                                </div>
+                                <button
+                                    onClick={() => setErrorMessage(null)}
+                                    className="ml-3 text-red-600 hover:text-red-800"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        )}
+
+                        {successMessage && (
+                            <div className="mb-6 bg-green-50 border border-green-200 rounded-md p-4 flex items-start">
+                                <svg className="w-5 h-5 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div className="flex-1">
+                                    <p className="text-sm text-green-800">{successMessage}</p>
+                                </div>
+                                <button
+                                    onClick={() => setSuccessMessage(null)}
+                                    className="ml-3 text-green-600 hover:text-green-800"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="border-t border-gray-200 pt-6 mt-6">
+                            <SeatSelector
+                                selectedSeat={selectedSeat}
+                                confirmedSeat={confirmedSeat}
+                                onSeatSelect={setSelectedSeat}
+                                sessionId={sessionId}
+                            />
+                        </div>
+
+                        {selectedSeat && !confirmedSeat && (
+                            <button
+                                type="button"
+                                onClick={handleConfirmSeat}
+                                disabled={confirmingSeat}
+                                className="w-full bg-gray-600 text-white py-3 rounded-md font-medium hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-6"
+                            >
+                                {confirmingSeat ? 'Đang xác nhận...' : `Xác nhận ghế số ${selectedSeat}`}
+                            </button>
+                        )}
+
+                        {confirmedSeat && !showFormModal && !submitted && (
+                            <div className="bg-black text-white rounded-md p-4 mt-6">
+                                <div className="flex items-center justify-between flex-wrap gap-2">
+                                    <div className="flex items-center">
+                                        <svg className="w-5 h-5 text-white mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                        </svg>
+                                        <span className="text-sm">
+                                            <strong>Đã xác nhận ghế số {confirmedSeat}</strong> - Bấm để điền thông tin
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedSeat(null)
+                                            setConfirmedSeat(null)
+                                        }}
+                                        className="text-xs text-gray-300 hover:text-white underline whitespace-nowrap"
+                                    >
+                                        Đổi ghế
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {submitted && registrationId && !showQRModal && (
+                            <div className={`mt-6 rounded-md p-4 ${
+                                paymentStatus === 'verified' || paymentStatus === 'sent' 
+                                    ? 'bg-green-50 border-2 border-green-400' 
+                                    : 'bg-green-50 border border-green-200'
+                            }`}>
+                                <div className="flex items-center justify-between flex-wrap gap-3">
+                                    <div className="flex items-center flex-1 min-w-0">
+                                        <svg className={`w-5 h-5 mr-2 flex-shrink-0 ${
+                                            paymentStatus === 'verified' || paymentStatus === 'sent'
+                                                ? 'text-green-600'
+                                                : 'text-green-600'
+                                        }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div className="min-w-0">
+                                            <p className={`text-sm font-medium ${
+                                                paymentStatus === 'verified' || paymentStatus === 'sent'
+                                                    ? 'text-green-800'
+                                                    : 'text-green-800'
+                                            }`}>
+                                                {paymentStatus === 'verified' || paymentStatus === 'sent' 
+                                                    ? '✓ Thanh toán đã được xác nhận!' 
+                                                    : 'Bạn đã đăng ký thành công'}
+                                            </p>
+                                            <p className={`text-xs ${
+                                                paymentStatus === 'verified' || paymentStatus === 'sent'
+                                                    ? 'text-green-700 font-medium'
+                                                    : 'text-green-600'
+                                            }`}>
+                                                {paymentStatus === 'pending' 
+                                                    ? 'Trạng thái: Đang chờ xác nhận' 
+                                                    : paymentStatus === 'verified' 
+                                                        ? 'Mã QR check-in đang được gửi đến email của bạn' 
+                                                        : 'Mã QR check-in đã được gửi! Vui lòng kiểm tra email'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setShowQRModal(true)
+                                            checkPaymentStatus(registrationId)
+                                        }}
+                                        className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap flex-shrink-0"
+                                    >
+                                        {paymentStatus === 'verified' || paymentStatus === 'sent' 
+                                            ? 'Xem chi tiết' 
+                                            : 'Xem QR thanh toán'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </section>
+
+            {/* Form Modal */}
+            {showFormModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-white rounded-lg border border-gray-200 p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-2xl font-bold text-black">Điền thông tin</h2>
+                            <button
+                                onClick={async () => {
+                                    if (confirmedSeat && !submitted) {
+                                        try {
+                                            await fetch('/api/release-seat', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({
+                                                    seat_number: confirmedSeat,
+                                                    session_id: sessionId
+                                                }),
+                                            })
+                                            setSelectedSeat(null)
+                                            setConfirmedSeat(null)
+                                        } catch (err) {
+                                            console.error('Error releasing seat:', err)
+                                        }
+                                    }
+                                    setShowFormModal(false)
+                                }}
+                                className="text-gray-400 hover:text-gray-600"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        {errorMessage && (
+                            <div className="mb-6 bg-red-50 border border-red-200 rounded-md p-4 flex items-start">
+                                <svg className="w-5 h-5 text-red-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div className="flex-1">
+                                    <p className="text-sm font-medium text-red-800">{errorMessage}</p>
+                                </div>
+                                <button
+                                    onClick={() => setErrorMessage(null)}
+                                    className="ml-3 text-red-600 hover:text-red-800"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        )}
+
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            <div>
+                                <label htmlFor="modal-name" className="block text-sm font-medium text-black mb-2">
+                                    Họ và tên *
+                                </label>
+                                <input
+                                    type="text"
+                                    id="modal-name"
+                                    value={formData.name}
+                                    onChange={(e) => {
+                                        setFormData({ ...formData, name: e.target.value })
+                                        if (formErrors.name) {
+                                            setFormErrors({ ...formErrors, name: '' })
+                                        }
+                                    }}
+                                    onBlur={() => {
+                                        if (!formData.name.trim()) {
+                                            setFormErrors({ ...formErrors, name: 'Vui lòng điền vào trường này.' })
+                                        }
+                                    }}
+                                    className={`w-full px-4 py-3 border rounded-md focus:ring-2 focus:ring-black focus:border-transparent bg-white text-black ${
+                                        formErrors.name ? 'border-red-300 focus:ring-red-500' : 'border-gray-300'
+                                    }`}
+                                    placeholder="Nhập họ và tên"
+                                />
+                                {formErrors.name && (
+                                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        {formErrors.name}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div>
+                                <label htmlFor="modal-email" className="block text-sm font-medium text-black mb-2">
+                                    Email *
+                                </label>
+                                <input
+                                    type="email"
+                                    id="modal-email"
+                                    value={formData.email}
+                                    onChange={(e) => {
+                                        setFormData({ ...formData, email: e.target.value })
+                                        if (formErrors.email) {
+                                            setFormErrors({ ...formErrors, email: '' })
+                                        }
+                                    }}
+                                    onBlur={() => {
+                                        if (!formData.email.trim()) {
+                                            setFormErrors({ ...formErrors, email: 'Vui lòng điền vào trường này.' })
+                                        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+                                            setFormErrors({ ...formErrors, email: 'Email không hợp lệ.' })
+                                        }
+                                    }}
+                                    className={`w-full px-4 py-3 border rounded-md focus:ring-2 focus:ring-black focus:border-transparent bg-white text-black ${
+                                        formErrors.email ? 'border-red-300 focus:ring-red-500' : 'border-gray-300'
+                                    }`}
+                                    placeholder="Nhập email"
+                                />
+                                {formErrors.email && (
+                                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        {formErrors.email}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div>
+                                <label htmlFor="modal-phone" className="block text-sm font-medium text-black mb-2">
+                                    Số điện thoại *
+                                </label>
+                                <input
+                                    type="tel"
+                                    id="modal-phone"
+                                    value={formData.phone}
+                                    onChange={(e) => {
+                                        setFormData({ ...formData, phone: e.target.value })
+                                        if (formErrors.phone) {
+                                            setFormErrors({ ...formErrors, phone: '' })
+                                        }
+                                    }}
+                                    onBlur={() => {
+                                        if (!formData.phone.trim()) {
+                                            setFormErrors({ ...formErrors, phone: 'Vui lòng điền vào trường này.' })
+                                        } else if (!/^[0-9]{10,11}$/.test(formData.phone.replace(/\s/g, ''))) {
+                                            setFormErrors({ ...formErrors, phone: 'Số điện thoại không hợp lệ.' })
+                                        }
+                                    }}
+                                    className={`w-full px-4 py-3 border rounded-md focus:ring-2 focus:ring-black focus:border-transparent bg-white text-black ${
+                                        formErrors.phone ? 'border-red-300 focus:ring-red-500' : 'border-gray-300'
+                                    }`}
+                                    placeholder="Nhập số điện thoại"
+                                />
+                                {formErrors.phone && (
+                                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        {formErrors.phone}
+                                    </p>
+                                )}
+                            </div>
+
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="w-full bg-black text-white py-3 rounded-md font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-4"
+                            >
+                                {loading ? 'Đang xử lý...' : 'Xác nhận đăng ký'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* QR Payment Modal */}
+            {showQRModal && submitted && registrationId && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-white rounded-lg border border-gray-200 p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-2xl font-bold text-black">Thanh toán</h2>
+                            <button
+                                onClick={handleCloseQRModal}
+                                className="text-gray-400 hover:text-gray-600"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        <div className="text-center mb-6">
+                            <div className="inline-flex items-center justify-center w-16 h-16 bg-black rounded-full mb-4">
+                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                            </div>
+                            <h3 className="text-xl font-bold text-black mb-2">Đăng ký thành công!</h3>
+                            <p className="text-gray-600">Vui lòng chuyển khoản theo thông tin bên dưới</p>
+                        </div>
+
+                        <div className="space-y-6">
+                            <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+                                <h4 className="text-lg font-semibold text-black mb-4">Thông tin chuyển khoản</h4>
+                                <div className="space-y-4">
+                                    <div>
+                                        <p className="text-sm text-gray-600">Số tài khoản:</p>
+                                        <p className="text-xl font-bold text-black">{bankAccount}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-sm text-gray-600">Ngân hàng:</p>
+                                        <p className="text-xl font-bold text-black">{bankName}</p>
+                                    </div>
+                                    {transferContent && (
+                                        <div>
+                                            <p className="text-sm text-gray-600 mb-2">Nội dung chuyển khoản:</p>
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-lg font-bold text-black bg-white px-3 py-2 rounded border border-gray-300 font-mono">
+                                                    {transferContent}
+                                                </p>
+                                                <button
+                                                    onClick={async () => {
+                                                        try {
+                                                            await navigator.clipboard.writeText(transferContent)
+                                                            setCopied(true)
+                                                            setTimeout(() => setCopied(false), 2000)
+                                                        } catch (err) {
+                                                            console.error('Failed to copy:', err)
+                                                        }
+                                                    }}
+                                                    className="p-2 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
+                                                    title="Copy nội dung chuyển khoản"
+                                                >
+                                                    {copied ? (
+                                                        <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                        </svg>
+                                                    ) : (
+                                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                        </svg>
+                                                    )}
+                                                </button>
+                                            </div>
+                                            {copied && (
+                                                <p className="text-xs text-green-600 mt-1">Đã copy vào clipboard!</p>
+                                            )}
+                                        </div>
+                                    )}
+                                    <div className="flex justify-center py-4">
+                                        <div className="bg-white p-4 rounded-lg border border-gray-200">
+                                            <Image
+                                                src="/images/qr.jpg"
+                                                alt="QR Code thanh toán"
+                                                width={200}
+                                                height={200}
+                                                className="w-[200px] h-[200px] object-contain"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                                <p className="text-sm text-gray-800 mb-2">
+                                    <strong>Lưu ý quan trọng:</strong>
+                                </p>
+                                <ul className="text-sm text-gray-800 space-y-1 list-disc list-inside">
+                                    <li>Vui lòng nhập đúng nội dung chuyển khoản: <strong className="font-mono">{transferContent}</strong></li>
+                                    <li>Sau khi chuyển khoản, nhân viên sẽ kiểm tra và gửi mã QR check-in qua email cho bạn.</li>
+                                </ul>
+                            </div>
+
+                            {paymentStatus === 'pending' && (
+                                <div className="text-center">
+                                    <p className="text-gray-600 mb-2">Trạng thái thanh toán: <span className="font-semibold text-yellow-600">Đang chờ xác nhận</span></p>
+                                </div>
+                            )}
+
+                            {paymentStatus === 'verified' && (
+                                <div className="bg-green-50 border-2 border-green-400 rounded-lg p-5">
+                                    <div className="flex items-start">
+                                        <svg className="w-6 h-6 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div className="flex-1">
+                                            <p className="text-green-800 font-semibold text-base mb-1">
+                                                ✓ Thanh toán đã được xác nhận!
+                                            </p>
+                                            <p className="text-green-700 text-sm">
+                                                Mã QR check-in đang được gửi đến email của bạn. Vui lòng kiểm tra hộp thư đến và spam.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {paymentStatus === 'sent' && (
+                                <div className="bg-green-50 border-2 border-green-400 rounded-lg p-5">
+                                    <div className="flex items-start">
+                                        <svg className="w-6 h-6 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div className="flex-1">
+                                            <p className="text-green-800 font-semibold text-base mb-1">
+                                                ✓ Mã QR check-in đã được gửi!
+                                            </p>
+                                            <p className="text-green-700 text-sm">
+                                                Vui lòng kiểm tra email của bạn (bao gồm cả thư mục spam) để nhận mã QR check-in.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={handleCancelFromQR}
+                                    className="flex-1 bg-red-600 text-white py-3 rounded-md font-medium hover:bg-red-700 transition-colors"
+                                >
+                                    Hủy vé
+                                </button>
+                                <button
+                                    onClick={handleCloseQRModal}
+                                    className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-md font-medium hover:bg-gray-300 transition-colors"
+                                >
+                                    Đóng
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Cancel Confirmation Modal */}
+            {showCancelModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-white rounded-lg border border-gray-200 p-6 max-w-md w-full">
+                        <h3 className="text-lg font-semibold text-black mb-4">Xác nhận hủy vé</h3>
+                        <p className="text-gray-600 mb-6">
+                            Bạn có chắc chắn muốn hủy vé? Ghế sẽ được giải phóng và bạn sẽ cần đăng ký lại.
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                onClick={() => setShowCancelModal(false)}
+                                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                            >
+                                Hủy
+                            </button>
+                            <button
+                                onClick={confirmCancelRegistration}
+                                disabled={loading}
+                                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {loading ? 'Đang xử lý...' : 'Xác nhận hủy'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
+    )
+}
+

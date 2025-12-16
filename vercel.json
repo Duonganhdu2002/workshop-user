@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "github": {
+    "silent": true
+  },
+  "images": {
+    "sizes": [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+    "domains": [
+      "images.unsplash.com", 
+      "source.unsplash.com", 
+      "commondatastorage.googleapis.com",
+      "p16-oec-va.ibyteing.com",
+      "p16-oec-va.ibyteimg.com",
+      "p16-sign-va.ibyteing.com",
+      "p16-sign-va.ibyteimg.com",
+      "p16-va.ibyteing.com",
+      "p16-va.ibyteimg.com"
+    ]
+  },
+  "functions": {
+    "app/api/**/*.js": {
+      "maxDuration": 30
+    }
+  }
+} 

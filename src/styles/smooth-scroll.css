@@ -1,0 +1,26 @@
+/* Smooth scrolling styles */
+#smooth-wrapper {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+}
+
+#smooth-content {
+  width: 100%;
+  min-height: 100vh;
+  will-change: transform;
+}
+
+html.has-scroll-smooth {
+  overflow: hidden;
+}
+
+html.has-scroll-dragging {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+} 
