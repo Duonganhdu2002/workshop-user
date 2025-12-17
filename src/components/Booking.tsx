@@ -44,9 +44,30 @@ export default function Booking() {
     const isConfigured = isSupabaseConfigured()
     const bankAccount = process.env.NEXT_PUBLIC_BANK_ACCOUNT || '0705413336'
     const bankName = process.env.NEXT_PUBLIC_BANK_NAME || 'VPBank'
+    const eventDate = process.env.NEXT_PUBLIC_EVENT_DATE || '2025-12-28'
+    const eventStartTime = process.env.NEXT_PUBLIC_EVENT_START_TIME || '14:00'
+    const eventEndTime = process.env.NEXT_PUBLIC_EVENT_END_TIME || '17:00'
+    const eventLocation = process.env.NEXT_PUBLIC_EVENT_LOCATION || 'Vibas Coffee - Tân Bình'
+    const eventLocationLink = process.env.NEXT_PUBLIC_EVENT_LOCATION_LINK || 'https://maps.app.goo.gl/ePbt2TnvQocTdVs5A'
     
     // Tạo nội dung chuyển khoản tự động dựa trên số ghế
     const transferContent = confirmedSeat ? `workshoptnfvn${confirmedSeat}` : ''
+    
+    // Format ngày giờ sự kiện
+    const formatEventDateTime = () => {
+        try {
+            const date = new Date(`${eventDate}T${eventStartTime}`)
+            const options: Intl.DateTimeFormatOptions = {
+                weekday: 'long',
+                month: 'long',
+                day: 'numeric',
+            }
+            const formattedDate = date.toLocaleDateString('vi-VN', options)
+            return `${formattedDate}, ${eventStartTime} - ${eventEndTime}`
+        } catch {
+            return `Ngày ${eventDate}, ${eventStartTime} - ${eventEndTime}`
+        }
+    }
 
     useEffect(() => {
         const savedId = localStorage.getItem('registrationId')
@@ -529,7 +550,32 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                     <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-6 lg:p-8 w-full">
                         <div className="text-center mb-8">
                             <h1 className="text-4xl md:text-5xl font-bold text-black mb-2 tracking-tight">Đăng ký Workshop</h1>
-                            <p className="text-gray-600">Chọn ghế ngồi để bắt đầu đăng ký</p>
+                            <p className="text-gray-600 mb-3">Chọn ghế ngồi để bắt đầu đăng ký</p>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-center gap-2 text-gray-700">
+                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                    </svg>
+                                    <p className="text-sm md:text-base font-medium">{formatEventDateTime()}</p>
+                                </div>
+                                <div className="flex items-center justify-center gap-2 text-gray-700 flex-wrap">
+                                    <svg className="w-5 h-5 text-gray-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                    <span className="text-sm md:text-base font-medium">
+                                        <span className="font-semibold">Địa điểm:</span>{' '}
+                                        <a 
+                                            href={eventLocationLink}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-black hover:text-gray-800 underline transition-colors"
+                                        >
+                                            {eventLocation}
+                                        </a>
+                                    </span>
+                                </div>
+                            </div>
                         </div>
 
                         {errorMessage && (

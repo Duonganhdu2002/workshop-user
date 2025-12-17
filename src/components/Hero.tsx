@@ -42,8 +42,9 @@ const Hero = () => {
       <div ref={containerRef} className="max-w-6xl w-full mx-auto flex flex-col items-center justify-center">
         {/* Title container */}
         <div className="overflow-hidden">
-          <h1 className="text-[14vw] font-semibold md:font-normal leading-none text-center md:text-[12vw] animate-text">
-            WORKSHOP
+          <h1 className="text-[8vw] mt-2 font-semibold md:font-normal leading-md text-center md:text-[5vw] animate-text">
+            
+            NGƯỜI VIỆT HEALTHY THEO KIỂU VIỆT
           </h1>
         </div>
         
@@ -56,8 +57,8 @@ const Hero = () => {
         
         {/* Name container */}
         <div className="overflow-hidden">
-          <h2 className="text-[14vw] font-semibold md:font-normal leading-none text-center md:text-[12vw] animate-text">
-            TÊN WORKSHOP
+          <h2 className="text-[8vw] font-semibold md:font-normal leading-md text-center md:text-[5vw] mt-0 animate-text">
+          WORKSHOP
           </h2>
         </div>
         
