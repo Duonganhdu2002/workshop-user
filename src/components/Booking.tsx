@@ -416,7 +416,8 @@ export default function Booking() {
                 email: formData.email,
                 phone: formData.phone,
                 payment_status: 'pending',
-                seat_number: confirmedSeat
+                seat_number: confirmedSeat,
+                transfer_content: transferContent
             }
 
             const { data, error } = await supabase
@@ -590,7 +591,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                         )}
 
                         {confirmedSeat && !showFormModal && !submitted && (
-                            <div className="bg-black text-white rounded-md p-4 mt-6">
+                            <div className="bg-green-600 text-white rounded-md p-4 mt-6">
                                 <div className="flex items-center justify-between flex-wrap gap-2">
                                     <div className="flex items-center">
                                         <svg className="w-5 h-5 text-white mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -606,7 +607,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                             setSelectedSeat(null)
                                             setConfirmedSeat(null)
                                         }}
-                                        className="text-xs text-gray-300 hover:text-white underline whitespace-nowrap"
+                                        className="text-xs text-green-200 hover:text-white underline whitespace-nowrap"
                                     >
                                         Đổi ghế
                                     </button>

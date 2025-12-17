@@ -122,6 +122,8 @@ export interface Database {
           payment_status: 'pending' | 'verified' | 'sent'
           qr_code: string | null
           seat_number: number | null
+          payment_content: string | null
+          transfer_content: string | null
           created_at: string
           updated_at: string
         }
@@ -134,6 +136,8 @@ export interface Database {
           payment_status?: 'pending' | 'verified' | 'sent'
           qr_code?: string | null
           seat_number?: number | null
+          payment_content?: string | null
+          transfer_content?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -146,6 +150,8 @@ export interface Database {
           payment_status?: 'pending' | 'verified' | 'sent'
           qr_code?: string | null
           seat_number?: number | null
+          payment_content?: string | null
+          transfer_content?: string | null
           created_at?: string
           updated_at?: string
         }

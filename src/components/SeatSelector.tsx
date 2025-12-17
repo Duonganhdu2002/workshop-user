@@ -222,9 +222,9 @@ export default function SeatSelector({
   }
 
   const getSeatColor = (seat: Seat) => {
-    // Ưu tiên 1: Ghế đã được đặt (booked) - màu xám, không thể chọn
+    // Ưu tiên 1: Ghế đã được đặt (booked) - màu đỏ thẩm, không thể chọn
     if (seat.status === 'booked') {
-      return 'bg-gray-400 cursor-not-allowed text-white'
+      return 'bg-red-800 cursor-not-allowed text-white'
     }
     
     // Ưu tiên 2: Ghế đang được người khác chọn (selected bởi session khác) - màu vàng, nhấp nháy
@@ -233,14 +233,14 @@ export default function SeatSelector({
       return 'bg-yellow-200 cursor-not-allowed animate-pulse border-2 border-yellow-400 text-gray-800'
     }
     
-    // Ưu tiên 3: Ghế đã được bạn chọn và confirm trong DB (selected bởi session của bạn) - màu đen
-    // Điều này để bạn thấy ghế của mình là màu đen
+    // Ưu tiên 3: Ghế đã được bạn chọn và confirm trong DB (selected bởi session của bạn) - màu xanh lá
+    // Điều này để bạn thấy ghế của mình là màu xanh lá
     if (seat.status === 'selected' && seat.selected_by === sessionId) {
       // Nếu đây là confirmedSeat, thêm ring
       if (confirmedSeat === seat.seat_number) {
-        return 'bg-black hover:bg-gray-800 cursor-pointer ring-2 ring-gray-400 ring-offset-1 text-white'
+        return 'bg-green-600 hover:bg-green-700 cursor-pointer ring-2 ring-green-400 ring-offset-1 text-white'
       }
-      return 'bg-black hover:bg-gray-800 cursor-pointer text-white'
+      return 'bg-green-600 hover:bg-green-700 cursor-pointer text-white'
     }
     
     // Ưu tiên 4: Ghế đang được bạn highlight (selectedSeat nhưng chưa confirm) - màu xám đậm
@@ -339,7 +339,7 @@ export default function SeatSelector({
           <span className="text-gray-600">Đang chọn</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 bg-black rounded ring-2 ring-gray-400 ring-offset-1"></div>
+          <div className="w-5 h-5 bg-green-600 rounded ring-2 ring-green-400 ring-offset-1"></div>
           <span className="text-gray-600">Đã xác nhận</span>
         </div>
         <div className="flex items-center gap-2">
@@ -347,7 +347,7 @@ export default function SeatSelector({
           <span className="text-gray-600">Người khác đang giữ chỗ</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 bg-gray-400 rounded"></div>
+          <div className="w-5 h-5 bg-red-800 rounded"></div>
           <span className="text-gray-600">Đã đặt</span>
         </div>
       </div>
@@ -364,7 +364,7 @@ export default function SeatSelector({
       )}
 
       {confirmedSeat && (
-        <div className="bg-black text-white rounded-md p-3 text-center mt-4">
+        <div className="bg-green-600 text-white rounded-md p-3 text-center mt-4">
           <p className="text-sm">
             <strong>✓ Đã xác nhận ghế số {confirmedSeat}</strong>
           </p>
