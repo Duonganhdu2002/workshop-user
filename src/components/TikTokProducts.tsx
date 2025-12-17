@@ -205,7 +205,7 @@ const TikTokProducts: React.FC = () => {
       {/* Header */}
       <div ref={headerRef} className="mb-8 md:mb-12">
         <h2 className="text-4xl sm:text-7xl md:text-[6vw] lg:text-[6vw] tracking-tight mb-4 font-bold">
-          GIỎ HÀNG
+          SẢN PHẨM
         </h2>
       </div>
 

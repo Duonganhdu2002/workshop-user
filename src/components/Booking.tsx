@@ -42,8 +42,8 @@ export default function Booking() {
     })
 
     const isConfigured = isSupabaseConfigured()
-    const bankAccount = process.env.NEXT_PUBLIC_BANK_ACCOUNT || '1234567890'
-    const bankName = process.env.NEXT_PUBLIC_BANK_NAME || 'Ngân hàng ABC'
+    const bankAccount = process.env.NEXT_PUBLIC_BANK_ACCOUNT || '0705413336'
+    const bankName = process.env.NEXT_PUBLIC_BANK_NAME || 'VPBank'
     
     // Tạo nội dung chuyển khoản tự động dựa trên số ghế
     const transferContent = confirmedSeat ? `workshoptnfvn${confirmedSeat}` : ''
@@ -451,6 +451,36 @@ export default function Booking() {
                 setRegistrationId(data.id)
                 setSubmitted(true)
                 localStorage.setItem('registrationId', data.id)
+                
+                // Gửi thông báo cho staff (không block UI nếu có lỗi)
+                try {
+                    console.log('Sending notification to staff for registration:', data.id)
+                    const notifyResponse = await fetch('/api/notify-staff', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            registration_id: data.id,
+                            name: formData.name,
+                            email: formData.email,
+                            phone: formData.phone,
+                            seat_number: confirmedSeat,
+                        }),
+                    })
+                    
+                    const notifyResult = await notifyResponse.json()
+                    console.log('Notify staff response:', notifyResult)
+                    
+                    if (!notifyResponse.ok) {
+                        console.error('Failed to notify staff:', notifyResult)
+                    } else if (notifyResult.warning) {
+                        console.warn('Staff notification warning:', notifyResult.warning, notifyResult.message)
+                    } else {
+                        console.log('Staff notification sent successfully to', notifyResult.staffCount, 'staff members')
+                    }
+                } catch (err) {
+                    console.error('Error sending notification to staff:', err)
+                    // Không throw error để không block đăng ký
+                }
                 
                 setShowFormModal(false)
                 setShowQRModal(true)

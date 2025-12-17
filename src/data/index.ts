@@ -223,7 +223,7 @@ export const abilitiesData: AbilityData[] = [
   {
     title: 'Đã trải nghiệm chất lượng',
     description:
-      'Mình đã trải nghiệm đủ lâu để đưa nó lên giỏ hàng. Các sản phẩm không xuất hiện trên video thì nó xuất hiện trong cuộc đời của mình.',
+      'Mình đã trải nghiệm đủ lâu để đảm bảo chất lượng. Các sản phẩm không xuất hiện trên video thì nó xuất hiện trong cuộc đời của mình.',
   },
   {
     title: 'Đã dùng trong video',
@@ -233,7 +233,7 @@ export const abilitiesData: AbilityData[] = [
   {
     title: 'Đã trải nghiệm chất lượng',
     description:
-    'Mình đã trải nghiệm đủ lâu để đưa nó lên giỏ hàng. Các sản phẩm không xuất hiện trên video thì nó xuất hiện trong cuộc đời của mình.',
+    'Mình đã trải nghiệm đủ lâu để đảm bảo chất lượng. Các sản phẩm không xuất hiện trên video thì nó xuất hiện trong cuộc đời của mình.',
   },
 ];
 
