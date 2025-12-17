@@ -256,9 +256,15 @@ export default function SeatSelector({
     const rows = []
     let seatIndex = 0
 
-    for (let row = 0; row < 6; row++) {
+    // Sắp xếp lại: 6 hàng đầu mỗi hàng 6 ghế, hàng cuối 7 ghế
+    // Đưa hàng ít ghế lên trên, không để ghế lẻ loi
+    const rowSizes = [6, 6, 6, 6, 6, 6, 7] // 6 hàng 6 ghế, 1 hàng 7 ghế
+
+    for (let row = 0; row < rowSizes.length; row++) {
       const rowSeats = []
-      for (let col = 0; col < 7; col++) {
+      const seatsInRow = rowSizes[row]
+      
+      for (let col = 0; col < seatsInRow; col++) {
         if (seatIndex < seats.length) {
           const seat = seats[seatIndex]
           rowSeats.push(
@@ -290,30 +296,6 @@ export default function SeatSelector({
       )
     }
 
-    if (seatIndex < seats.length) {
-      rows.push(
-        <div key={6} className="flex gap-1.5 md:gap-2 justify-center">
-          <button
-            key={seats[seatIndex].seat_number}
-            onClick={() => seats[seatIndex].status !== 'booked' && selectSeat(seats[seatIndex].seat_number)}
-            disabled={seats[seatIndex].status === 'booked' || (seats[seatIndex].status === 'selected' && seats[seatIndex].selected_by !== sessionId)}
-            className={`w-10 h-10 md:w-12 md:h-12 rounded-md font-semibold text-xs md:text-sm transition-all duration-200 ${getSeatColor(seats[seatIndex])}`}
-            title={`Ghế ${seats[seatIndex].seat_number} - ${
-              seats[seatIndex].status === 'available' 
-                ? 'Trống' 
-                : seats[seatIndex].status === 'selected' 
-                  ? seats[seatIndex].selected_by === sessionId 
-                    ? 'Bạn đang giữ chỗ' 
-                    : 'Người khác đang giữ chỗ' 
-                  : 'Đã đặt'
-            }`}
-          >
-            {seats[seatIndex].seat_number}
-          </button>
-        </div>
-      )
-    }
-
     return rows
   }
 
@@ -328,18 +310,6 @@ export default function SeatSelector({
 
   return (
     <div className="space-y-4 w-full">
-      <div className="text-center mb-4">
-        <div className="flex items-center justify-center gap-2 mb-2">
-          <h3 className="text-lg font-semibold text-black">Chọn ghế ngồi</h3>
-          {realtimeStatus === 'connected' && (
-            <div className="flex items-center gap-1" title="Đang đồng bộ realtime">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-              <span className="text-xs text-gray-500">Live</span>
-            </div>
-          )}
-        </div>
-        <p className="text-sm text-gray-600">Tối đa 43 ghế - Cập nhật realtime khi có người chọn</p>
-      </div>
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-md p-3 mb-4">
