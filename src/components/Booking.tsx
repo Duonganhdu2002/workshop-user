@@ -97,17 +97,9 @@ export default function Booking() {
             return
         }
         
-        // Load payosPaymentId từ localStorage nếu không có URL params
-        const savedPayosId = localStorage.getItem('payosPaymentId')
-        if (savedPayosId) {
-            setPayosPaymentId(savedPayosId)
-            setSubmitted(true)
-            checkPaymentStatusByPayosId(savedPayosId)
-        }
-        
-        // Also check for old registrationId format for backward compatibility
+        // Load registrationId từ localStorage nếu không có URL params (backward compatibility)
         const savedId = localStorage.getItem('registrationId')
-        if (savedId && !savedPayosId) {
+        if (savedId) {
             setRegistrationId(savedId)
             setSubmitted(true)
             checkPaymentStatus(savedId)
@@ -196,32 +188,24 @@ export default function Booking() {
         }
 
         const handleStorageChange = (e: StorageEvent) => {
-            if (e.key === 'registrationId' || e.key === 'payosPaymentId') {
+            if (e.key === 'registrationId') {
                 const currentRegId = localStorage.getItem('registrationId')
-                const currentPayosId = localStorage.getItem('payosPaymentId')
                 
-                if (!currentRegId && !currentPayosId && (registrationId || payosPaymentId)) {
+                if (!currentRegId && registrationId) {
                     handleAutoCancelRegistration()
-                } else {
-                    if (currentRegId && currentRegId !== registrationId) {
-                        setRegistrationId(currentRegId)
-                        setSubmitted(true)
-                        checkPaymentStatus(currentRegId)
-                    }
-                    if (currentPayosId && currentPayosId !== payosPaymentId) {
-                        setPayosPaymentId(currentPayosId)
-                        setSubmitted(true)
-                        checkPaymentStatusByPayosId(currentPayosId)
-                    }
+                } else if (currentRegId && currentRegId !== registrationId) {
+                    setRegistrationId(currentRegId)
+                    setSubmitted(true)
+                    checkPaymentStatus(currentRegId)
                 }
             }
         }
 
         const checkInterval = setInterval(() => {
             const currentRegId = localStorage.getItem('registrationId')
-            const currentPayosId = localStorage.getItem('payosPaymentId')
             
-            if (!currentRegId && !currentPayosId && (registrationId || payosPaymentId)) {
+            // Chỉ kiểm tra registrationId từ localStorage, payosPaymentId chỉ tồn tại trong session
+            if (!currentRegId && registrationId) {
                 handleAutoCancelRegistration()
             }
         }, 1000)
@@ -343,12 +327,11 @@ export default function Booking() {
                         setPaymentStatus(newPaymentStatus)
                         setRegistrationId(payosData.registration_id)
                         
-                        // Xóa localStorage khi thanh toán thành công
-                        if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
-                            localStorage.removeItem('payosPaymentId')
-                            localStorage.removeItem('registrationId')
-                            console.log('Payment successful, cleared localStorage')
-                        }
+                    // Xóa localStorage khi thanh toán thành công
+                    if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
+                        localStorage.removeItem('registrationId')
+                        console.log('Payment successful, cleared localStorage')
+                    }
                     }
                 } else {
                     // Payment paid nhưng registration chưa được tạo (có thể đang xử lý)
@@ -589,20 +572,19 @@ export default function Booking() {
                 }
             }
 
-            setRegistrationId(null)
-            setPayosPaymentId(null)
-            setSubmitted(false)
-            setPaymentStatus('pending')
-            setFormData({
-                name: '',
-                email: '',
-                phone: '',
-            })
-            setSelectedSeat(null)
-            setConfirmedSeat(null)
-            
-            localStorage.removeItem('registrationId')
-            localStorage.removeItem('payosPaymentId')
+                setRegistrationId(null)
+                setPayosPaymentId(null)
+                setSubmitted(false)
+                setPaymentStatus('pending')
+                setFormData({
+                    name: '',
+                    email: '',
+                    phone: '',
+                })
+                setSelectedSeat(null)
+                setConfirmedSeat(null)
+                
+                localStorage.removeItem('registrationId')
 
             setSuccessMessage('Đã hủy vé thành công. Ghế đã được giải phóng.')
         } catch (error: any) {
@@ -756,10 +738,9 @@ export default function Booking() {
                     throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
                 }
                 
-                // Lưu payosPaymentId để tracking
+                // Lưu payosPaymentId vào state để tracking (không lưu vào localStorage)
                 if (payosResult.payosPaymentId) {
                     setPayosPaymentId(payosResult.payosPaymentId)
-                    localStorage.setItem('payosPaymentId', payosResult.payosPaymentId)
                 }
                 
                 // Chuyển hướng trực tiếp đến trang thanh toán PayOS
