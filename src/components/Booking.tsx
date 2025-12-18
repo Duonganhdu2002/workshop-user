@@ -572,11 +572,12 @@ export default function Booking() {
                 return
             }
 
-            // Kiểm tra xem email hoặc số điện thoại đã được sử dụng để đăng ký chưa
+            // Kiểm tra xem email hoặc số điện thoại đã được sử dụng để đăng ký chưa (chỉ kiểm tra đã thanh toán)
             const { data: existingRegistrations, error: checkError } = await supabase
                 .from('registrations')
-                .select('id, email, phone, seat_number')
+                .select('id, email, phone, seat_number, payment_status')
                 .or(`email.eq.${formData.email},phone.eq.${formData.phone}`)
+                .in('payment_status', ['verified', 'sent']) // Chỉ kiểm tra đã thanh toán
                 .limit(1)
 
             if (checkError && checkError.code !== 'PGRST116') {
@@ -592,112 +593,79 @@ export default function Booking() {
                 return
             }
 
-            const registrationData: any = {
+            // KHÔNG tạo registration ngay, chỉ tạo payment link với thông tin đăng ký
+            // Registration sẽ được tạo khi thanh toán thành công trong webhook
+            // Giữ ghế ở trạng thái 'selected' với sessionId để tránh người khác chọn
+            const { error: seatError } = await supabase
+                .from('seats')
+                .update({
+                    status: 'selected', // Giữ selected, không đánh dấu booked cho đến khi thanh toán
+                    selected_by: sessionId, // Giữ selected_by để biết ai đang giữ ghế
+                    expires_at: null // Xóa expires_at để ghế không bị tự động giải phóng
+                })
+                .eq('seat_number', confirmedSeat)
+
+            if (seatError) {
+                console.error('Error updating seat:', seatError)
+                throw new Error('Không thể giữ ghế. Vui lòng thử lại.')
+            }
+
+            // Lưu thông tin tạm vào localStorage để có thể khôi phục nếu cần
+            const tempRegistrationData = {
                 name: formData.name,
                 email: formData.email,
                 phone: formData.phone,
-                payment_status: 'pending',
                 seat_number: confirmedSeat,
-                payment_method: 'payos'
+                session_id: sessionId,
+                created_at: new Date().toISOString()
             }
-
-            const { data, error } = await supabase
-                .from('registrations')
-                .insert([registrationData])
-                .select()
-                .single()
-
-            if (error) {
-                if (error.message.includes('workshop_date') && error.message.includes('not-null')) {
-                    throw new Error('Database chưa được cập nhật. Vui lòng chạy SQL: ALTER TABLE registrations ALTER COLUMN workshop_date DROP NOT NULL;')
-                }
-                throw error
-            }
-
-            if (data) {
-                // Chỉ gán registration_id, giữ status = 'selected' cho đến khi thanh toán thành công
-                // Ghế sẽ chỉ được đánh dấu 'booked' khi thanh toán thành công (trong webhook)
-                const { error: seatError } = await supabase
-                    .from('seats')
-                    .update({
-                        status: 'selected', // Giữ selected, không đánh dấu booked cho đến khi thanh toán
-                        registration_id: data.id,
-                        selected_by: sessionId, // Giữ selected_by để biết ai đang giữ ghế
-                        expires_at: null // Xóa expires_at để ghế không bị tự động giải phóng
+            localStorage.setItem('tempRegistration', JSON.stringify(tempRegistrationData))
+            
+            // Tạo payment link với thông tin đăng ký (không có registrationId)
+            setSubmitted(true) // Đánh dấu đã submit để hiển thị UI thanh toán
+            
+            // Tạo link thanh toán PayOS với thông tin đăng ký (không có registrationId)
+            setCreatingPayosLink(true)
+            try {
+                const payosResponse = await fetch('/api/payos/create-payment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        // Không có registrationId, chỉ gửi thông tin đăng ký
+                        customerName: formData.name,
+                        customerEmail: formData.email,
+                        customerPhone: formData.phone,
+                        seatNumber: confirmedSeat,
+                        sessionId: sessionId,
+                        amount: 399000, // 399K VND
+                        description: `Workshop - Ghế ${confirmedSeat}` // Max 25 characters for PayOS
                     })
-                    .eq('seat_number', confirmedSeat)
-
-                if (seatError) {
-                    console.error('Error updating seat:', seatError)
-                }
-
-                setRegistrationId(data.id)
-                setSubmitted(true)
-                localStorage.setItem('registrationId', data.id)
+                })
                 
-                // Tạo link thanh toán PayOS
-                setCreatingPayosLink(true)
-                try {
-                    const payosResponse = await fetch('/api/payos/create-payment', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            registrationId: data.id,
-                            amount: 399000, // 399K VND
-                            description: `Workshop - Ghế ${confirmedSeat}` // Max 25 characters for PayOS
-                        })
-                    })
-                    
-                    const payosResult = await payosResponse.json()
-                    
-                    if (!payosResponse.ok) {
-                        throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
-                    }
-                    
-                    // Gửi thông báo cho staff (không block UI nếu có lỗi)
-                    // Chạy song song với redirect để không làm chậm trải nghiệm người dùng
-                    fetch('/api/notify-staff', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            registration_id: data.id,
-                            name: formData.name,
-                            email: formData.email,
-                            phone: formData.phone,
-                            seat_number: confirmedSeat,
-                            payment_method: 'payos'
-                        }),
-                    }).then(notifyResponse => {
-                        notifyResponse.json().then(notifyResult => {
-                            console.log('Notify staff response:', notifyResult)
-                            if (!notifyResponse.ok) {
-                                console.error('Failed to notify staff:', notifyResult)
-                            } else if (notifyResult.warning) {
-                                console.warn('Staff notification warning:', notifyResult.warning, notifyResult.message)
-                            } else {
-                                console.log('Staff notification sent successfully to', notifyResult.staffCount, 'staff members')
-                            }
-                        }).catch(err => {
-                            console.error('Error parsing notify staff response:', err)
-                        })
-                    }).catch(err => {
-                        console.error('Error sending notification to staff:', err)
-                    })
-                    
-                    // Chuyển hướng trực tiếp đến trang thanh toán PayOS
-                    if (payosResult.paymentLink) {
-                        setShowFormModal(false)
-                        window.location.href = payosResult.paymentLink
-                        return // Dừng xử lý để tránh set state sau khi redirect
-                    } else {
-                        throw new Error('Không nhận được link thanh toán từ PayOS')
-                    }
-                } catch (err: any) {
-                    console.error('Error creating PayOS payment:', err)
-                    setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
-                    setTimeout(() => setErrorMessage(null), 5000)
-                    setCreatingPayosLink(false)
+                const payosResult = await payosResponse.json()
+                
+                if (!payosResponse.ok) {
+                    throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
                 }
+                
+                // Lưu payosPaymentId vào localStorage để có thể kiểm tra trạng thái sau này
+                if (payosResult.payosPaymentId) {
+                    localStorage.setItem('payosPaymentId', payosResult.payosPaymentId)
+                }
+                
+                // Chuyển hướng trực tiếp đến trang thanh toán PayOS
+                if (payosResult.paymentLink) {
+                    setShowFormModal(false)
+                    window.location.href = payosResult.paymentLink
+                    return // Dừng xử lý để tránh set state sau khi redirect
+                } else {
+                    throw new Error('Không nhận được link thanh toán từ PayOS')
+                }
+            } catch (err: any) {
+                console.error('Error creating PayOS payment:', err)
+                setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
+                setTimeout(() => setErrorMessage(null), 5000)
+                setCreatingPayosLink(false)
             }
         } catch (error: any) {
             setErrorMessage('Có lỗi xảy ra: ' + error.message)

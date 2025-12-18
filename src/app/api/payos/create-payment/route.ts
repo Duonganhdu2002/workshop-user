@@ -51,11 +51,28 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { registrationId, amount, description } = body
+    const { 
+      registrationId, // Optional - chỉ có khi đã có registration
+      customerName, 
+      customerEmail, 
+      customerPhone, 
+      seatNumber, 
+      sessionId,
+      amount, 
+      description 
+    } = body
 
-    if (!registrationId || !amount) {
+    // Nếu không có registrationId, phải có đầy đủ thông tin customer
+    if (!registrationId && (!customerName || !customerEmail || !customerPhone || !seatNumber)) {
       return NextResponse.json(
-        { error: 'Missing required fields: registrationId and amount' },
+        { error: 'Missing required fields: either registrationId or (customerName, customerEmail, customerPhone, seatNumber)' },
+        { status: 400 }
+      )
+    }
+
+    if (!amount) {
+      return NextResponse.json(
+        { error: 'Missing required field: amount' },
         { status: 400 }
       )
     }
@@ -69,71 +86,98 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get registration details
-    const { data: registration, error: regError } = await supabase
-      .from('registrations')
-      .select('*')
-      .eq('id', registrationId)
-      .single()
-
-    if (regError || !registration) {
-      return NextResponse.json(
-        { error: 'Registration not found' },
-        { status: 404 }
-      )
-    }
-
-    // Check if PayOS payment already exists for this registration
-    // First check by registration.payos_payment_id
-    if (registration.payos_payment_id) {
-      const { data: existingPayment, error: paymentError } = await supabase
-        .from('payos_payments')
+    // Get registration details nếu có registrationId
+    let registration: any = null
+    if (registrationId) {
+      const { data: regData, error: regError } = await supabase
+        .from('registrations')
         .select('*')
-        .eq('id', registration.payos_payment_id)
+        .eq('id', registrationId)
         .single()
 
-      if (!paymentError && existingPayment) {
-        // If payment link is still valid (not expired or cancelled), return existing link
-        if (existingPayment.status === 'pending' && existingPayment.payment_link) {
-          console.log('Returning existing PayOS payment link:', existingPayment.id)
-          return NextResponse.json({
-            paymentLink: existingPayment.payment_link,
-            paymentLinkId: existingPayment.payment_link_id,
-            payosCode: existingPayment.payos_code,
-            payosPaymentId: existingPayment.id
-          })
-        }
+      if (regError || !regData) {
+        return NextResponse.json(
+          { error: 'Registration not found' },
+          { status: 404 }
+        )
       }
+      registration = regData
     }
 
-    // Also check by registration_id directly in case payos_payment_id is not set
-    const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
-      .from('payos_payments')
-      .select('*')
-      .eq('registration_id', registrationId)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    // Check if PayOS payment already exists
+    if (registrationId) {
+      // Check by registration.payos_payment_id
+      if (registration.payos_payment_id) {
+        const { data: existingPayment, error: paymentError } = await supabase
+          .from('payos_payments')
+          .select('*')
+          .eq('id', registration.payos_payment_id)
+          .single()
 
-    if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
-      console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
-      // Update registration with payos_payment_id if not set
-      if (!registration.payos_payment_id) {
-        await supabase
-          .from('registrations')
-          .update({
-            payos_payment_id: existingPaymentByRegId.id,
-            payment_method: 'payos'
-          })
-          .eq('id', registrationId)
+        if (!paymentError && existingPayment) {
+          // If payment link is still valid (not expired or cancelled), return existing link
+          if (existingPayment.status === 'pending' && existingPayment.payment_link) {
+            console.log('Returning existing PayOS payment link:', existingPayment.id)
+            return NextResponse.json({
+              paymentLink: existingPayment.payment_link,
+              paymentLinkId: existingPayment.payment_link_id,
+              payosCode: existingPayment.payos_code,
+              payosPaymentId: existingPayment.id
+            })
+          }
+        }
       }
-      return NextResponse.json({
-        paymentLink: existingPaymentByRegId.payment_link,
-        paymentLinkId: existingPaymentByRegId.payment_link_id,
-        payosCode: existingPaymentByRegId.payos_code,
-        payosPaymentId: existingPaymentByRegId.id
-      })
+
+      // Also check by registration_id directly
+      const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
+        .from('payos_payments')
+        .select('*')
+        .eq('registration_id', registrationId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
+        console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
+        // Update registration with payos_payment_id if not set
+        if (!registration.payos_payment_id) {
+          await supabase
+            .from('registrations')
+            .update({
+              payos_payment_id: existingPaymentByRegId.id,
+              payment_method: 'payos'
+            })
+            .eq('id', registrationId)
+        }
+        return NextResponse.json({
+          paymentLink: existingPaymentByRegId.payment_link,
+          paymentLinkId: existingPaymentByRegId.payment_link_id,
+          payosCode: existingPaymentByRegId.payos_code,
+          payosPaymentId: existingPaymentByRegId.id
+        })
+      }
+    } else {
+      // Check by sessionId và seatNumber nếu không có registrationId
+      const { data: existingPaymentBySession, error: paymentBySessionError } = await supabase
+        .from('payos_payments')
+        .select('*')
+        .eq('customer_email', customerEmail)
+        .eq('seat_number', seatNumber)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!paymentBySessionError && existingPaymentBySession && existingPaymentBySession.payment_link) {
+        console.log('Found existing pending PayOS payment by customer info:', existingPaymentBySession.id)
+        return NextResponse.json({
+          paymentLink: existingPaymentBySession.payment_link,
+          paymentLinkId: existingPaymentBySession.payment_link_id,
+          payosCode: existingPaymentBySession.payos_code,
+          payosPaymentId: existingPaymentBySession.id
+        })
+      }
     }
 
     // Create payment link with PayOS
@@ -146,7 +190,8 @@ export async function POST(request: NextRequest) {
     
     // PayOS requires description to be max 25 characters
     // Create a short description
-    const defaultDescription = `Workshop - Ghế ${registration.seat_number}`
+    const seatNum = registration?.seat_number || seatNumber
+    const defaultDescription = `Workshop - Ghế ${seatNum}`
     let paymentDescription = description || defaultDescription
     
     // Truncate to 25 characters if too long
@@ -154,12 +199,15 @@ export async function POST(request: NextRequest) {
       paymentDescription = paymentDescription.substring(0, 22) + '...'
     }
     
+    // Tạo paymentId tạm để track payment nếu không có registrationId
+    const tempPaymentId = registrationId || `temp_${orderCode}`
+    
     const paymentData = {
       orderCode: orderCode,
       amount: amountNum,
       description: paymentDescription,
-      cancelUrl: `${baseUrl}/?payment=cancelled&id=${registrationId}`,
-      returnUrl: `${baseUrl}/?payment=success&id=${registrationId}`
+      cancelUrl: `${baseUrl}/?payment=cancelled&paymentId=${tempPaymentId}`,
+      returnUrl: `${baseUrl}/?payment=success&paymentId=${tempPaymentId}`
     }
 
     console.log('Creating PayOS payment link with data:', {
@@ -226,41 +274,93 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Save payment information to database
+    // Save payment information to database với thông tin customer
+    const paymentInsertData: any = {
+      registration_id: registrationId || null, // null nếu chưa có registration
+      payos_code: paymentLinkResponse.orderCode.toString(),
+      amount: amountNum,
+      description: paymentData.description,
+      payment_link_id: paymentLinkResponse.paymentLinkId,
+      payment_link: paymentLinkResponse.checkoutUrl,
+      status: 'pending'
+    }
+
+    // Thêm thông tin customer nếu không có registrationId (lưu tạm để tạo registration sau)
+    if (!registrationId && customerName && customerEmail && customerPhone && seatNumber) {
+      paymentInsertData.customer_name = customerName
+      paymentInsertData.customer_email = customerEmail
+      paymentInsertData.customer_phone = customerPhone
+      paymentInsertData.seat_number = seatNumber
+      paymentInsertData.session_id = sessionId || null
+    }
+
     const { data: payosPayment, error: insertError } = await supabase
       .from('payos_payments')
-      .insert({
-        registration_id: registrationId,
-        payos_code: paymentLinkResponse.orderCode.toString(),
-        amount: amountNum,
-        description: paymentData.description,
-        payment_link_id: paymentLinkResponse.paymentLinkId,
-        payment_link: paymentLinkResponse.checkoutUrl,
-        status: 'pending'
-      })
+      .insert(paymentInsertData)
       .select()
       .single()
 
     if (insertError) {
       console.error('Error saving PayOS payment:', insertError)
+      // Nếu lỗi do column không tồn tại, thử insert không có customer fields
+      if (insertError.message?.includes('column') && !registrationId) {
+        const { data: retryPayment, error: retryError } = await supabase
+          .from('payos_payments')
+          .insert({
+            registration_id: null,
+            payos_code: paymentLinkResponse.orderCode.toString(),
+            amount: amountNum,
+            description: paymentData.description,
+            payment_link_id: paymentLinkResponse.paymentLinkId,
+            payment_link: paymentLinkResponse.checkoutUrl,
+            status: 'pending',
+            webhook_data: {
+              customer_name: customerName,
+              customer_email: customerEmail,
+              customer_phone: customerPhone,
+              seat_number: seatNumber,
+              session_id: sessionId
+            }
+          })
+          .select()
+          .single()
+        
+        if (retryError) {
+          console.error('Error saving PayOS payment (retry):', retryError)
+          return NextResponse.json(
+            { error: 'Failed to save payment information' },
+            { status: 500 }
+          )
+        }
+        
+        return NextResponse.json({
+          paymentLink: paymentLinkResponse.checkoutUrl,
+          paymentLinkId: paymentLinkResponse.paymentLinkId,
+          payosCode: paymentLinkResponse.orderCode.toString(),
+          payosPaymentId: retryPayment.id
+        })
+      }
+      
       return NextResponse.json(
         { error: 'Failed to save payment information' },
         { status: 500 }
       )
     }
 
-    // Update registration with payos_payment_id and payment_method
-    const { error: updateError } = await supabase
-      .from('registrations')
-      .update({
-        payos_payment_id: payosPayment.id,
-        payment_method: 'payos'
-      })
-      .eq('id', registrationId)
+    // Update registration with payos_payment_id nếu có registrationId
+    if (registrationId) {
+      const { error: updateError } = await supabase
+        .from('registrations')
+        .update({
+          payos_payment_id: payosPayment.id,
+          payment_method: 'payos'
+        })
+        .eq('id', registrationId)
 
-    if (updateError) {
-      console.error('Error updating registration:', updateError)
-      // Don't fail the request, payment link was created successfully
+      if (updateError) {
+        console.error('Error updating registration:', updateError)
+        // Don't fail the request, payment link was created successfully
+      }
     }
 
     return NextResponse.json({
