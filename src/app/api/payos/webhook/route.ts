@@ -202,36 +202,20 @@ export async function POST(request: NextRequest) {
         // Don't fail webhook, payment was successful
       }
 
-      // Send notification to staff - chỉ khi thanh toán thành công
+      // Send notification to staff
       try {
-        // Lấy thông tin đầy đủ của registration để gửi email
-        const { data: registrationData, error: regDataError } = await supabase
-          .from('registrations')
-          .select('name, email, phone, seat_number, created_at')
-          .eq('id', payosPayment.registration_id)
-          .single()
-
-        if (!regDataError && registrationData) {
-          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
-            (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-          
-          console.log('Sending payment success notification to staff for registration:', payosPayment.registration_id)
-          await fetch(`${baseUrl}/api/notify-staff`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              registration_id: payosPayment.registration_id,
-              name: registrationData.name,
-              email: registrationData.email,
-              phone: registrationData.phone,
-              seat_number: registrationData.seat_number,
-              payment_method: 'payos',
-              payos_code: code?.toString() || orderCode.toString()
-            })
-          }).catch(err => console.error('Failed to notify staff:', err))
-        } else {
-          console.error('Error fetching registration data for staff notification:', regDataError)
-        }
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+        
+        await fetch(`${baseUrl}/api/notify-staff`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            registration_id: payosPayment.registration_id,
+            payment_method: 'payos',
+            payos_code: code?.toString() || orderCode.toString()
+          })
+        }).catch(err => console.error('Failed to notify staff:', err))
       } catch (err) {
         console.error('Error notifying staff:', err)
       }
