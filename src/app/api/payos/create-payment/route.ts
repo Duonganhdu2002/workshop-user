@@ -90,54 +90,44 @@ export async function POST(request: NextRequest) {
 
       registration = regData
 
-      // Check if PayOS payment already exists for this registration
-      if (registration.payos_payment_id) {
-        const { data: existingPayment, error: paymentError } = await supabase
-          .from('payos_payments')
-          .select('*')
-          .eq('id', registration.payos_payment_id)
-          .single()
-
-        if (!paymentError && existingPayment) {
-          if (existingPayment.status === 'pending' && existingPayment.payment_link) {
-            console.log('Returning existing PayOS payment link:', existingPayment.id)
-            return NextResponse.json({
-              paymentLink: existingPayment.payment_link,
-              paymentLinkId: existingPayment.payment_link_id,
-              payosCode: existingPayment.payos_code,
-              payosPaymentId: existingPayment.id
-            })
-          }
-        }
-      }
-
-      // Also check by registration_id directly
-      const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
+      // KHÔNG reuse payment link cũ - LUÔN tạo payment mới
+      // Mark cancelled các payment pending cũ với cùng registration_id để cleanup
+      const { data: oldRegPayments, error: oldRegPaymentsError } = await supabase
         .from('payos_payments')
-        .select('*')
+        .select('id, status, temp_seat_number, registration_id')
         .eq('registration_id', registrationId)
         .eq('status', 'pending')
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
 
-      if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
-        console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
-        if (!registration.payos_payment_id) {
-          await supabase
-            .from('registrations')
-            .update({
-              payos_payment_id: existingPaymentByRegId.id,
-              payment_method: 'payos'
-            })
-            .eq('id', registrationId)
+      if (!oldRegPaymentsError && oldRegPayments && oldRegPayments.length > 0) {
+        console.log(`Found ${oldRegPayments.length} old pending payment(s) for registration ${registrationId}, marking as cancelled`)
+        
+        // Mark all old pending payments as cancelled
+        const oldPaymentIds = oldRegPayments.map(p => p.id)
+        await supabase
+          .from('payos_payments')
+          .update({
+            status: 'cancelled',
+            updated_at: new Date().toISOString()
+          })
+          .in('id', oldPaymentIds)
+        
+        // Release seats associated with old payments
+        for (const oldPayment of oldRegPayments) {
+          const seatNum = oldPayment.temp_seat_number || registration?.seat_number
+          if (seatNum) {
+            await supabase
+              .from('seats')
+              .update({
+                status: 'available',
+                registration_id: null,
+                selected_by: null,
+                selected_at: null,
+                expires_at: null
+              })
+              .eq('seat_number', seatNum)
+          }
         }
-        return NextResponse.json({
-          paymentLink: existingPaymentByRegId.payment_link,
-          paymentLinkId: existingPaymentByRegId.payment_link_id,
-          payosCode: existingPaymentByRegId.payos_code,
-          payosPaymentId: existingPaymentByRegId.id
-        })
       }
     } else {
       // New flow: registration data provided directly
@@ -166,46 +156,50 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Check for pending payments with same email/phone
-      // Only return payment if status is 'pending' - ignore cancelled/expired payments
-      const { data: existingPendingPayments, error: pendingCheckError } = await supabase
+      // KHÔNG reuse payment link cũ - LUÔN tạo payment mới để tránh lỗi "đơn hàng không tồn tại"
+      // Mark cancelled các payment pending cũ với cùng email/phone để cleanup
+      const { data: oldPendingPayments, error: oldPaymentsError } = await supabase
         .from('payos_payments')
-        .select('*')
+        .select('id, status, payos_code, temp_seat_number')
         .or(`temp_email.eq.${email},temp_phone.eq.${phone}`)
         .eq('status', 'pending')
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
 
-      if (!pendingCheckError && existingPendingPayments && existingPendingPayments.payment_link) {
-        console.log('Found existing pending PayOS payment for this email/phone:', existingPendingPayments.id)
-        return NextResponse.json({
-          paymentLink: existingPendingPayments.payment_link,
-          paymentLinkId: existingPendingPayments.payment_link_id,
-          payosCode: existingPendingPayments.payos_code,
-          payosPaymentId: existingPendingPayments.id
-        })
-      }
-      
-      // If no pending payment found, check if there are cancelled/expired payments
-      // This helps with logging but we'll create a new payment anyway
-      const { data: cancelledPayments } = await supabase
-        .from('payos_payments')
-        .select('id, status')
-        .or(`temp_email.eq.${email},temp_phone.eq.${phone}`)
-        .in('status', ['cancelled', 'expired'])
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      
-      if (cancelledPayments) {
-        console.log('Found cancelled/expired payment for this email/phone, creating new payment')
+      if (!oldPaymentsError && oldPendingPayments && oldPendingPayments.length > 0) {
+        console.log(`Found ${oldPendingPayments.length} old pending payment(s) for this email/phone, marking as cancelled`)
+        
+        // Mark all old pending payments as cancelled
+        const oldPaymentIds = oldPendingPayments.map(p => p.id)
+        await supabase
+          .from('payos_payments')
+          .update({
+            status: 'cancelled',
+            updated_at: new Date().toISOString()
+          })
+          .in('id', oldPaymentIds)
+        
+        // Release seats associated with old payments
+        for (const oldPayment of oldPendingPayments) {
+          if ((oldPayment as any).temp_seat_number) {
+            await supabase
+              .from('seats')
+              .update({
+                status: 'available',
+                registration_id: null,
+                selected_by: null,
+                selected_at: null,
+                expires_at: null
+              })
+              .eq('seat_number', (oldPayment as any).temp_seat_number)
+          }
+        }
       }
     }
 
     // Create payment link with PayOS
-    // Use a unique order code (timestamp + random number to avoid collisions)
-    const orderCode = Date.now() + Math.floor(Math.random() * 1000)
+    // Use a unique order code (timestamp + large random number to ensure uniqueness)
+    // This ensures each payment has a completely unique orderCode, even if user cancels and retries
+    const orderCode = Date.now() * 1000 + Math.floor(Math.random() * 1000000)
     
     // Get base URL
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 

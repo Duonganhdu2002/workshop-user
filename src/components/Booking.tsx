@@ -743,7 +743,16 @@ export default function Booking() {
 
             setSubmitted(true)
             
-            // Tạo link thanh toán PayOS với registration data (không tạo registration trước)
+            // Xóa payment link cũ và payment ID cũ trước khi tạo payment mới
+            // Đảm bảo luôn tạo payment mới, không reuse payment link cũ
+            setPayosPaymentLink(null)
+            const oldPayosId = payosPaymentId
+            setPayosPaymentId(null)
+            if (oldPayosId) {
+                localStorage.removeItem('payosPaymentId')
+            }
+            
+            // Tạo link thanh toán PayOS mới với registration data (không tạo registration trước)
             setCreatingPayosLink(true)
             try {
                 const payosResponse = await fetch('/api/payos/create-payment', {
