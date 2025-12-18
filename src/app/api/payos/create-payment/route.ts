@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if PayOS payment already exists for this registration
+    // First check by registration.payos_payment_id
     if (registration.payos_payment_id) {
       const { data: existingPayment, error: paymentError } = await supabase
         .from('payos_payments')
@@ -94,6 +95,7 @@ export async function POST(request: NextRequest) {
       if (!paymentError && existingPayment) {
         // If payment link is still valid (not expired or cancelled), return existing link
         if (existingPayment.status === 'pending' && existingPayment.payment_link) {
+          console.log('Returning existing PayOS payment link:', existingPayment.id)
           return NextResponse.json({
             paymentLink: existingPayment.payment_link,
             paymentLinkId: existingPayment.payment_link_id,
@@ -104,6 +106,36 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Also check by registration_id directly in case payos_payment_id is not set
+    const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
+      .from('payos_payments')
+      .select('*')
+      .eq('registration_id', registrationId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
+      console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
+      // Update registration with payos_payment_id if not set
+      if (!registration.payos_payment_id) {
+        await supabase
+          .from('registrations')
+          .update({
+            payos_payment_id: existingPaymentByRegId.id,
+            payment_method: 'payos'
+          })
+          .eq('id', registrationId)
+      }
+      return NextResponse.json({
+        paymentLink: existingPaymentByRegId.payment_link,
+        paymentLinkId: existingPaymentByRegId.payment_link_id,
+        payosCode: existingPaymentByRegId.payos_code,
+        payosPaymentId: existingPaymentByRegId.id
+      })
+    }
+
     // Create payment link with PayOS
     // Use a unique order code (timestamp + random number to avoid collisions)
     const orderCode = Date.now() + Math.floor(Math.random() * 1000)
@@ -112,10 +144,20 @@ export async function POST(request: NextRequest) {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
     
+    // PayOS requires description to be max 25 characters
+    // Create a short description
+    const defaultDescription = `Workshop - Ghế ${registration.seat_number}`
+    let paymentDescription = description || defaultDescription
+    
+    // Truncate to 25 characters if too long
+    if (paymentDescription.length > 25) {
+      paymentDescription = paymentDescription.substring(0, 22) + '...'
+    }
+    
     const paymentData = {
       orderCode: orderCode,
       amount: amountNum,
-      description: description || `Thanh toán đăng ký workshop - Ghế số ${registration.seat_number}`,
+      description: paymentDescription,
       cancelUrl: `${baseUrl}/?payment=cancelled&id=${registrationId}`,
       returnUrl: `${baseUrl}/?payment=success&id=${registrationId}`
     }
@@ -160,6 +202,17 @@ export async function POST(request: NextRequest) {
             details: payosError.message
           },
           { status: 500 }
+        )
+      }
+      
+      // Handle description length error
+      if (payosError?.message?.includes('25') || payosError?.message?.includes('Mô tả tối đa')) {
+        return NextResponse.json(
+          { 
+            error: 'Description quá dài. PayOS chỉ cho phép tối đa 25 ký tự.',
+            details: payosError.message
+          },
+          { status: 400 }
         )
       }
       
@@ -231,6 +284,9 @@ export async function POST(request: NextRequest) {
       errorMessage = 'PayOS signature error. Please check PAYOS_CHECKSUM_KEY environment variable.'
     } else if (error?.message?.includes('authentication') || error?.message?.includes('unauthorized')) {
       errorMessage = 'PayOS authentication error. Please check PAYOS_CLIENT_ID and PAYOS_API_KEY environment variables.'
+    } else if (error?.message?.includes('25') || error?.message?.includes('Mô tả tối đa')) {
+      errorMessage = 'Description quá dài. PayOS chỉ cho phép tối đa 25 ký tự.'
+      statusCode = 400
     } else if (error?.message?.includes('network') || error?.message?.includes('fetch')) {
       errorMessage = 'Network error connecting to PayOS. Please try again later.'
       statusCode = 503

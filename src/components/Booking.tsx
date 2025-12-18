@@ -516,7 +516,7 @@ export default function Booking() {
                             body: JSON.stringify({
                                 registrationId: data.id,
                                 amount: 5000, // 5K VND (test price)
-                                description: `Thanh toán đăng ký workshop - Ghế số ${confirmedSeat}`
+                                description: `Workshop - Ghế ${confirmedSeat}` // Max 25 characters for PayOS
                             })
                         })
                         
