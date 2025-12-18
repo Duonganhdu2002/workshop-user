@@ -167,7 +167,6 @@ export async function POST(request: NextRequest) {
       }
 
       // Check for pending payments with same email/phone
-      // Only return if payment is still valid (not expired/cancelled and payment_link exists)
       const { data: existingPendingPayments, error: pendingCheckError } = await supabase
         .from('payos_payments')
         .select('*')
@@ -178,27 +177,13 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
 
       if (!pendingCheckError && existingPendingPayments && existingPendingPayments.payment_link) {
-        // Check if payment link is still valid (not expired - PayOS links expire after some time)
-        // For now, we'll create a new payment if the old one is older than 15 minutes
-        const paymentAge = Date.now() - new Date(existingPendingPayments.created_at).getTime()
-        const fifteenMinutes = 15 * 60 * 1000
-        
-        if (paymentAge < fifteenMinutes) {
-          console.log('Found existing pending PayOS payment for this email/phone:', existingPendingPayments.id)
-          return NextResponse.json({
-            paymentLink: existingPendingPayments.payment_link,
-            paymentLinkId: existingPendingPayments.payment_link_id,
-            payosCode: existingPendingPayments.payos_code,
-            payosPaymentId: existingPendingPayments.id
-          })
-        } else {
-          // Payment link is too old, mark as expired and create new one
-          console.log('Existing payment link expired, creating new one')
-          await supabase
-            .from('payos_payments')
-            .update({ status: 'expired' })
-            .eq('id', existingPendingPayments.id)
-        }
+        console.log('Found existing pending PayOS payment for this email/phone:', existingPendingPayments.id)
+        return NextResponse.json({
+          paymentLink: existingPendingPayments.payment_link,
+          paymentLinkId: existingPendingPayments.payment_link_id,
+          payosCode: existingPendingPayments.payos_code,
+          payosPaymentId: existingPendingPayments.id
+        })
       }
     }
 
@@ -221,14 +206,13 @@ export async function POST(request: NextRequest) {
       paymentDescription = paymentDescription.substring(0, 22) + '...'
     }
     
-    // Use orderCode in URLs since we can't update PayOS URLs after creation
-    // We'll look up the payment by orderCode in the callback handlers
+    // Use payosPaymentId for URLs if we have one, otherwise use a placeholder that will be updated
     const paymentData = {
       orderCode: orderCode,
       amount: amountNum,
       description: paymentDescription,
-      cancelUrl: `${baseUrl}/?payment=cancelled&orderCode=${orderCode}`,
-      returnUrl: `${baseUrl}/?payment=success&orderCode=${orderCode}`
+      cancelUrl: `${baseUrl}/?payment=cancelled&payosId=PLACEHOLDER`,
+      returnUrl: `${baseUrl}/?payment=success&payosId=PLACEHOLDER`
     }
 
     console.log('Creating PayOS payment link with data:', {
@@ -327,6 +311,12 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       )
     }
+
+    // Update payment URLs with actual payosPaymentId
+    const updatedCancelUrl = `${baseUrl}/?payment=cancelled&payosId=${payosPayment.id}`
+    const updatedReturnUrl = `${baseUrl}/?payment=success&payosId=${payosPayment.id}`
+    
+    // Note: We can't update PayOS URLs after creation, but we'll handle it in the frontend/webhook
 
     // Update registration with payos_payment_id and payment_method (only if registrationId exists)
     if (registrationId) {
