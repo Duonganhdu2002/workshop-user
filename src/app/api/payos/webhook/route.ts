@@ -136,6 +136,30 @@ export async function POST(request: NextRequest) {
 
     console.log(`Updating payment status to: ${paymentStatus}`)
 
+    // If payment is cancelled or expired, release the seat
+    if (paymentStatus === 'cancelled' || paymentStatus === 'expired') {
+      const registration = payosPayment.registrations as any
+      if (registration?.seat_number) {
+        const { error: seatReleaseError } = await supabase
+          .from('seats')
+          .update({
+            status: 'available',
+            registration_id: null,
+            selected_by: null,
+            selected_at: null,
+            expires_at: null
+          })
+          .eq('seat_number', registration.seat_number)
+          .eq('registration_id', payosPayment.registration_id)
+
+        if (seatReleaseError) {
+          console.error('Error releasing seat after payment cancellation:', seatReleaseError)
+        } else {
+          console.log(`Seat ${registration.seat_number} released after payment ${paymentStatus}`)
+        }
+      }
+    }
+
     // Update payment record
     const { error: updatePaymentError } = await supabase
       .from('payos_payments')
@@ -174,6 +198,27 @@ export async function POST(request: NextRequest) {
         // Don't fail the webhook, payment was recorded
       } else {
         console.log('Registration payment status updated to verified')
+      }
+
+      // Update seat status to 'booked' when payment is successful
+      if (registration?.seat_number) {
+        const { error: seatUpdateError } = await supabase
+          .from('seats')
+          .update({
+            status: 'booked',
+            selected_by: null,
+            selected_at: null,
+            expires_at: null
+          })
+          .eq('seat_number', registration.seat_number)
+          .eq('registration_id', payosPayment.registration_id)
+
+        if (seatUpdateError) {
+          console.error('Error updating seat to booked status:', seatUpdateError)
+          // Don't fail the webhook, payment was successful
+        } else {
+          console.log(`Seat ${registration.seat_number} marked as booked after successful payment`)
+        }
       }
 
       // Automatically send QR code email to customer

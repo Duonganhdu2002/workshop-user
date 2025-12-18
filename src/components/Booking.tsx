@@ -67,6 +67,30 @@ export default function Booking() {
     }
 
     useEffect(() => {
+        // Kiểm tra URL params khi component mount
+        if (typeof window === 'undefined') return
+        
+        const urlParams = new URLSearchParams(window.location.search)
+        const paymentParam = urlParams.get('payment')
+        const idParam = urlParams.get('id')
+        
+        // Nếu có payment=cancelled trong URL, xử lý hủy thanh toán
+        if (paymentParam === 'cancelled' && idParam) {
+            handlePaymentCancelled(idParam)
+            // Xóa query params khỏi URL
+            window.history.replaceState({}, '', window.location.pathname)
+            return
+        }
+        
+        // Nếu có payment=success trong URL, kiểm tra lại trạng thái
+        if (paymentParam === 'success' && idParam) {
+            checkPaymentStatus(idParam)
+            // Xóa query params khỏi URL
+            window.history.replaceState({}, '', window.location.pathname)
+            return
+        }
+        
+        // Load registrationId từ localStorage nếu không có URL params
         const savedId = localStorage.getItem('registrationId')
         if (savedId) {
             setRegistrationId(savedId)
@@ -91,7 +115,8 @@ export default function Booking() {
                     .single()
 
                 if (!regError && registrationData?.seat_number) {
-                    await supabase
+                    // Giải phóng ghế: reset về available và xóa tất cả thông tin liên quan
+                    const { error: seatError } = await supabase
                         .from('seats')
                         .update({
                             status: 'available',
@@ -101,11 +126,32 @@ export default function Booking() {
                             expires_at: null
                         })
                         .eq('seat_number', registrationData.seat_number)
+                        .eq('registration_id', currentId) // Đảm bảo chỉ update ghế của registration này
+
+                    if (seatError) {
+                        console.error('Error releasing seat in auto-cancel:', seatError)
+                        // Thử lại không có điều kiện registration_id nếu lần đầu fail
+                        await supabase
+                            .from('seats')
+                            .update({
+                                status: 'available',
+                                registration_id: null,
+                                selected_by: null,
+                                selected_at: null,
+                                expires_at: null
+                            })
+                            .eq('seat_number', registrationData.seat_number)
+                    }
 
                     await supabase
                         .from('registrations')
                         .delete()
                         .eq('id', currentId)
+                    
+                    // Trigger reload seats để cập nhật UI
+                    setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('reload-seats'))
+                    }, 100)
                 }
 
                 setRegistrationId(null)
@@ -186,6 +232,37 @@ export default function Booking() {
         }
     }, [confirmedSeat, submitted, sessionId])
 
+    const handlePaymentCancelled = async (registrationId: string) => {
+        try {
+            // Kiểm tra payment status từ PayOS payments table
+            const { data: registrationData, error: regError } = await supabase
+                .from('registrations')
+                .select('payos_payment_id, seat_number')
+                .eq('id', registrationId)
+                .single()
+
+            if (!regError && registrationData) {
+                const regData = registrationData as any
+                if (regData.payos_payment_id) {
+                    const { data: payosData } = await (supabase as any)
+                        .from('payos_payments')
+                        .select('status')
+                        .eq('id', regData.payos_payment_id)
+                        .single()
+
+                    // Nếu payment đã cancelled hoặc expired, reset trạng thái
+                    if (payosData && (payosData.status === 'cancelled' || payosData.status === 'expired')) {
+                        setPaymentStatus('pending')
+                        setErrorMessage('Bạn đã hủy thanh toán. Vui lòng thanh toán để hoàn tất đăng ký.')
+                        setTimeout(() => setErrorMessage(null), 8000)
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error handling payment cancellation:', error)
+        }
+    }
+
     const checkPaymentStatus = async (id: string) => {
         const { data, error } = await supabase
             .from('registrations')
@@ -200,18 +277,8 @@ export default function Booking() {
 
         if (data) {
             const registrationData = data as any
-            if (registrationData.payment_status) {
-                const newPaymentStatus = registrationData.payment_status as 'pending' | 'verified' | 'sent'
-                setPaymentStatus(newPaymentStatus)
-                
-                // Xóa localStorage khi thanh toán thành công
-                if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
-                    localStorage.removeItem('registrationId')
-                    console.log('Payment successful, cleared localStorage')
-                }
-            }
             
-            // If PayOS payment exists, get the payment link
+            // Kiểm tra trạng thái từ PayOS payments table để đảm bảo chính xác
             if (registrationData.payos_payment_id) {
                 try {
                     const { data: payosData, error: payosError } = await (supabase as any)
@@ -220,11 +287,52 @@ export default function Booking() {
                         .eq('id', registrationData.payos_payment_id)
                         .single()
                     
-                    if (!payosError && payosData?.payment_link) {
-                        setPayosPaymentLink(payosData.payment_link)
+                    if (!payosError && payosData) {
+                        // Nếu payment đã cancelled hoặc expired, không hiển thị thành công
+                        if (payosData.status === 'cancelled' || payosData.status === 'expired') {
+                            setPaymentStatus('pending')
+                            setPayosPaymentLink(payosData.payment_link || null)
+                            return
+                        }
+                        
+                        // Nếu payment đã paid, kiểm tra registration payment_status
+                        if (payosData.status === 'paid' && registrationData.payment_status) {
+                            const newPaymentStatus = registrationData.payment_status as 'pending' | 'verified' | 'sent'
+                            setPaymentStatus(newPaymentStatus)
+                            
+                            // Xóa localStorage khi thanh toán thành công
+                            if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
+                                localStorage.removeItem('registrationId')
+                                console.log('Payment successful, cleared localStorage')
+                            }
+                        } else {
+                            // Payment vẫn pending
+                            setPaymentStatus('pending')
+                        }
+                        
+                        if (payosData.payment_link) {
+                            setPayosPaymentLink(payosData.payment_link)
+                        }
                     }
                 } catch (err) {
                     console.error('Error fetching PayOS payment:', err)
+                    // Fallback về payment_status từ registration
+                    if (registrationData.payment_status) {
+                        const newPaymentStatus = registrationData.payment_status as 'pending' | 'verified' | 'sent'
+                        setPaymentStatus(newPaymentStatus)
+                    }
+                }
+            } else {
+                // Không có PayOS payment, dùng payment_status từ registration
+                if (registrationData.payment_status) {
+                    const newPaymentStatus = registrationData.payment_status as 'pending' | 'verified' | 'sent'
+                    setPaymentStatus(newPaymentStatus)
+                    
+                    // Xóa localStorage khi thanh toán thành công
+                    if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
+                        localStorage.removeItem('registrationId')
+                        console.log('Payment successful, cleared localStorage')
+                    }
                 }
             }
         }
@@ -311,6 +419,8 @@ export default function Booking() {
             }
 
             if (registrationData?.seat_number) {
+                // Giải phóng ghế: reset về available và xóa tất cả thông tin liên quan
+                // Đảm bảo giải phóng cả khi status là 'selected' hoặc 'booked'
                 const { error: seatError } = await supabase
                     .from('seats')
                     .update({
@@ -321,9 +431,30 @@ export default function Booking() {
                         expires_at: null
                     })
                     .eq('seat_number', registrationData.seat_number)
+                    .eq('registration_id', registrationId) // Đảm bảo chỉ update ghế của registration này
 
                 if (seatError) {
                     console.error('Error releasing seat:', seatError)
+                    // Thử lại không có điều kiện registration_id nếu lần đầu fail
+                    const { error: retryError } = await supabase
+                        .from('seats')
+                        .update({
+                            status: 'available',
+                            registration_id: null,
+                            selected_by: null,
+                            selected_at: null,
+                            expires_at: null
+                        })
+                        .eq('seat_number', registrationData.seat_number)
+                    
+                    if (retryError) {
+                        console.error('Error releasing seat (retry):', retryError)
+                    }
+                } else {
+                    // Trigger reload seats để cập nhật UI ngay lập tức
+                    setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('reload-seats'))
+                    }, 100)
                 }
             }
 
@@ -484,19 +615,20 @@ export default function Booking() {
             }
 
             if (data) {
+                // Chỉ gán registration_id, giữ status = 'selected' cho đến khi thanh toán thành công
+                // Ghế sẽ chỉ được đánh dấu 'booked' khi thanh toán thành công (trong webhook)
                 const { error: seatError } = await supabase
                     .from('seats')
                     .update({
-                        status: 'booked',
+                        status: 'selected', // Giữ selected, không đánh dấu booked cho đến khi thanh toán
                         registration_id: data.id,
-                        selected_by: null,
-                        selected_at: null,
-                        expires_at: null
+                        selected_by: sessionId, // Giữ selected_by để biết ai đang giữ ghế
+                        expires_at: null // Xóa expires_at để ghế không bị tự động giải phóng
                     })
                     .eq('seat_number', confirmedSeat)
 
                 if (seatError) {
-                    console.error('Error booking seat:', seatError)
+                    console.error('Error updating seat:', seatError)
                 }
 
                 setRegistrationId(data.id)
@@ -522,19 +654,9 @@ export default function Booking() {
                         throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
                     }
                     
-                    setPayosPaymentLink(payosResult.paymentLink)
-                } catch (err: any) {
-                    console.error('Error creating PayOS payment:', err)
-                    setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
-                    setTimeout(() => setErrorMessage(null), 5000)
-                } finally {
-                    setCreatingPayosLink(false)
-                }
-                
-                // Gửi thông báo cho staff (không block UI nếu có lỗi)
-                try {
-                    console.log('Sending notification to staff for registration:', data.id)
-                    const notifyResponse = await fetch('/api/notify-staff', {
+                    // Gửi thông báo cho staff (không block UI nếu có lỗi)
+                    // Chạy song song với redirect để không làm chậm trải nghiệm người dùng
+                    fetch('/api/notify-staff', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -545,25 +667,37 @@ export default function Booking() {
                             seat_number: confirmedSeat,
                             payment_method: 'payos'
                         }),
+                    }).then(notifyResponse => {
+                        notifyResponse.json().then(notifyResult => {
+                            console.log('Notify staff response:', notifyResult)
+                            if (!notifyResponse.ok) {
+                                console.error('Failed to notify staff:', notifyResult)
+                            } else if (notifyResult.warning) {
+                                console.warn('Staff notification warning:', notifyResult.warning, notifyResult.message)
+                            } else {
+                                console.log('Staff notification sent successfully to', notifyResult.staffCount, 'staff members')
+                            }
+                        }).catch(err => {
+                            console.error('Error parsing notify staff response:', err)
+                        })
+                    }).catch(err => {
+                        console.error('Error sending notification to staff:', err)
                     })
                     
-                    const notifyResult = await notifyResponse.json()
-                    console.log('Notify staff response:', notifyResult)
-                    
-                    if (!notifyResponse.ok) {
-                        console.error('Failed to notify staff:', notifyResult)
-                    } else if (notifyResult.warning) {
-                        console.warn('Staff notification warning:', notifyResult.warning, notifyResult.message)
+                    // Chuyển hướng trực tiếp đến trang thanh toán PayOS
+                    if (payosResult.paymentLink) {
+                        setShowFormModal(false)
+                        window.location.href = payosResult.paymentLink
+                        return // Dừng xử lý để tránh set state sau khi redirect
                     } else {
-                        console.log('Staff notification sent successfully to', notifyResult.staffCount, 'staff members')
+                        throw new Error('Không nhận được link thanh toán từ PayOS')
                     }
-                } catch (err) {
-                    console.error('Error sending notification to staff:', err)
-                    // Không throw error để không block đăng ký
+                } catch (err: any) {
+                    console.error('Error creating PayOS payment:', err)
+                    setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
+                    setTimeout(() => setErrorMessage(null), 5000)
+                    setCreatingPayosLink(false)
                 }
-                
-                setShowFormModal(false)
-                setShowQRModal(true)
             }
         } catch (error: any) {
             setErrorMessage('Có lỗi xảy ra: ' + error.message)

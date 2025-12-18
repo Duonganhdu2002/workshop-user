@@ -9,6 +9,7 @@ interface Seat {
   seat_number: number
   status: SeatStatus
   selected_by?: string | null
+  registration_id?: string | null
 }
 
 export default function SeatSelector({ 
@@ -62,10 +63,10 @@ export default function SeatSelector({
 
   const loadSeats = async () => {
     try {
-      // Đảm bảo lấy đầy đủ các field cần thiết, đặc biệt là selected_by
+      // Đảm bảo lấy đầy đủ các field cần thiết, bao gồm registration_id để biết ghế đã được đăng ký chưa
       const { data, error } = await supabase
         .from('seats')
-        .select('seat_number, status, selected_by')
+        .select('seat_number, status, selected_by, registration_id')
         .order('seat_number', { ascending: true })
 
       if (error) throw error
@@ -75,15 +76,17 @@ export default function SeatSelector({
         const newSeats = Array.from({ length: 43 }, (_, i) => ({
           seat_number: i + 1,
           status: 'available' as SeatStatus,
-          selected_by: null
+          selected_by: null,
+          registration_id: null
         }))
         setSeats(newSeats)
       } else {
-        // Đảm bảo format đúng với selected_by
+        // Đảm bảo format đúng với selected_by và registration_id
         const formattedSeats: Seat[] = seatData.map((seat: any) => ({
           seat_number: seat.seat_number,
           status: seat.status,
-          selected_by: seat.selected_by || null
+          selected_by: seat.selected_by || null,
+          registration_id: seat.registration_id || null
         }))
         setSeats(formattedSeats)
       }
@@ -140,7 +143,8 @@ export default function SeatSelector({
               const fullSeat: Seat = {
                 seat_number: updatedSeat.seat_number,
                 status: updatedSeat.status || 'available',
-                selected_by: updatedSeat.selected_by !== undefined ? updatedSeat.selected_by : null
+                selected_by: updatedSeat.selected_by !== undefined ? updatedSeat.selected_by : null,
+                registration_id: updatedSeat.registration_id !== undefined ? updatedSeat.registration_id : null
               }
               
               console.log('🟢 Updating seat in state:', fullSeat)
@@ -155,7 +159,8 @@ export default function SeatSelector({
                 const oldSeat = newSeats[seatIndex]
                 if (
                   oldSeat.status !== fullSeat.status ||
-                  oldSeat.selected_by !== fullSeat.selected_by
+                  oldSeat.selected_by !== fullSeat.selected_by ||
+                  oldSeat.registration_id !== fullSeat.registration_id
                 ) {
                   console.log('🟡 Seat changed:', {
                     old: oldSeat,
@@ -207,7 +212,8 @@ export default function SeatSelector({
       return
     }
 
-    if (seat.status === 'booked') {
+    // Ghế đã được đặt (booked) hoặc đã có registration_id (đã đăng ký) - không thể chọn
+    if (seat.status === 'booked' || seat.registration_id) {
       setError('Ghế này đã được đặt. Vui lòng chọn ghế khác.')
       return
     }
@@ -222,8 +228,8 @@ export default function SeatSelector({
   }
 
   const getSeatColor = (seat: Seat) => {
-    // Ưu tiên 1: Ghế đã được đặt (booked) - màu đỏ thẩm, không thể chọn
-    if (seat.status === 'booked') {
+    // Ưu tiên 1: Ghế đã được đặt (booked) hoặc đã có registration_id (đã đăng ký) - màu đỏ thẩm, không thể chọn
+    if (seat.status === 'booked' || seat.registration_id) {
       return 'bg-red-800 cursor-not-allowed text-white'
     }
     
