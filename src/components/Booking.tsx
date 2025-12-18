@@ -77,8 +77,11 @@ export default function Booking() {
         
         // Nếu có payment=cancelled trong URL, xử lý hủy thanh toán
         if (paymentParam === 'cancelled') {
+            const orderCode = urlParams.get('orderCode')
             const payosId = urlParams.get('payosId') || idParam
-            if (payosId) {
+            if (orderCode) {
+                handlePaymentCancelledByOrderCode(orderCode)
+            } else if (payosId) {
                 handlePaymentCancelled(payosId)
             }
             // Xóa query params khỏi URL
@@ -88,8 +91,11 @@ export default function Booking() {
         
         // Nếu có payment=success trong URL, kiểm tra lại trạng thái
         if (paymentParam === 'success') {
+            const orderCode = urlParams.get('orderCode')
             const payosId = urlParams.get('payosId') || idParam
-            if (payosId) {
+            if (orderCode) {
+                checkPaymentStatusByOrderCode(orderCode)
+            } else if (payosId) {
                 checkPaymentStatusByPayosId(payosId)
             }
             // Xóa query params khỏi URL
@@ -268,11 +274,57 @@ export default function Booking() {
         }
     }, [confirmedSeat, submitted, sessionId])
 
+    const handlePaymentCancelledByOrderCode = async (orderCode: string) => {
+        try {
+            // Kiểm tra payment status từ PayOS payments table bằng orderCode
+            const { data: payosData, error: payosError } = await (supabase as any)
+                .from('payos_payments' as any)
+                .select('id, status, temp_seat_number, registration_id')
+                .eq('payos_code', orderCode)
+                .single()
+
+            if (!payosError && payosData) {
+                // Update payosPaymentId if found
+                if (payosData.id) {
+                    setPayosPaymentId(payosData.id)
+                    localStorage.setItem('payosPaymentId', payosData.id)
+                }
+                
+                // Nếu payment đã cancelled hoặc expired, reset trạng thái và giải phóng ghế
+                if (payosData.status === 'cancelled' || payosData.status === 'expired') {
+                    setPaymentStatus('pending')
+                    setErrorMessage('Bạn đã hủy thanh toán. Vui lòng thanh toán để hoàn tất đăng ký.')
+                    setTimeout(() => setErrorMessage(null), 8000)
+                    
+                    // Giải phóng ghế nếu có
+                    const seatNum = payosData.temp_seat_number
+                    if (seatNum) {
+                        await fetch('/api/release-seat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                seat_number: seatNum,
+                                session_id: sessionId
+                            }),
+                        }).catch(() => {})
+                    }
+                    
+                    // Reset state
+                    setSubmitted(false)
+                    setPayosPaymentId(null)
+                    localStorage.removeItem('payosPaymentId')
+                }
+            }
+        } catch (error) {
+            console.error('Error handling payment cancellation by orderCode:', error)
+        }
+    }
+
     const handlePaymentCancelled = async (payosId: string) => {
         try {
             // Kiểm tra payment status từ PayOS payments table
             const { data: payosData, error: payosError } = await (supabase as any)
-                .from('payos_payments')
+                .from('payos_payments' as any)
                 .select('status, temp_seat_number, registration_id')
                 .eq('id', payosId)
                 .single()
@@ -308,10 +360,75 @@ export default function Booking() {
         }
     }
 
+    const checkPaymentStatusByOrderCode = async (orderCode: string) => {
+        try {
+            const { data: payosData, error: payosError } = await (supabase as any)
+                .from('payos_payments' as any)
+                .select('id, payment_link, status, registration_id')
+                .eq('payos_code', orderCode)
+                .single()
+            
+            if (payosError || !payosData) {
+                console.error('Error fetching PayOS payment by orderCode:', payosError)
+                return
+            }
+            
+            // Update payosPaymentId if found
+            if (payosData.id) {
+                setPayosPaymentId(payosData.id)
+                localStorage.setItem('payosPaymentId', payosData.id)
+            }
+            
+            // Nếu payment đã cancelled hoặc expired
+            if (payosData.status === 'cancelled' || payosData.status === 'expired') {
+                setPaymentStatus('pending')
+                setPayosPaymentLink(payosData.payment_link || null)
+                return
+            }
+            
+            // Nếu payment đã paid, kiểm tra registration
+            if (payosData.status === 'paid') {
+                if (payosData.registration_id) {
+                    // Registration đã được tạo, kiểm tra payment_status
+                    const { data: regData } = await supabase
+                        .from('registrations')
+                        .select('payment_status')
+                        .eq('id', payosData.registration_id)
+                        .single()
+                    
+                    if (regData) {
+                        const newPaymentStatus = regData.payment_status as 'pending' | 'verified' | 'sent'
+                        setPaymentStatus(newPaymentStatus)
+                        setRegistrationId(payosData.registration_id)
+                        
+                        // Xóa localStorage khi thanh toán thành công
+                        if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
+                            localStorage.removeItem('payosPaymentId')
+                            localStorage.removeItem('registrationId')
+                            console.log('Payment successful, cleared localStorage')
+                        }
+                    }
+                } else {
+                    // Payment paid nhưng registration chưa được tạo (có thể đang xử lý)
+                    setPaymentStatus('pending')
+                }
+            } else {
+                // Payment vẫn pending
+                setPaymentStatus('pending')
+            }
+            
+            if (payosData.payment_link) {
+                setPayosPaymentLink(payosData.payment_link)
+            }
+        } catch (err) {
+            console.error('Error checking payment status by orderCode:', err)
+        }
+    }
+
     const checkPaymentStatusByPayosId = async (payosId: string) => {
         try {
             const { data: payosData, error: payosError } = await (supabase as any)
-                .from('payos_payments')
+                .from('payos_payments' as any)
                 .select('payment_link, status, registration_id')
                 .eq('id', payosId)
                 .single()

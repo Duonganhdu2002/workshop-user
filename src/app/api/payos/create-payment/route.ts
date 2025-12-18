@@ -206,13 +206,14 @@ export async function POST(request: NextRequest) {
       paymentDescription = paymentDescription.substring(0, 22) + '...'
     }
     
-    // Use payosPaymentId for URLs if we have one, otherwise use a placeholder that will be updated
+    // Use orderCode in URLs since we can't update PayOS URLs after creation
+    // We'll look up the payment by orderCode in the callback handlers
     const paymentData = {
       orderCode: orderCode,
       amount: amountNum,
       description: paymentDescription,
-      cancelUrl: `${baseUrl}/?payment=cancelled&payosId=PLACEHOLDER`,
-      returnUrl: `${baseUrl}/?payment=success&payosId=PLACEHOLDER`
+      cancelUrl: `${baseUrl}/?payment=cancelled&orderCode=${orderCode}`,
+      returnUrl: `${baseUrl}/?payment=success&orderCode=${orderCode}`
     }
 
     console.log('Creating PayOS payment link with data:', {
