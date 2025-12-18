@@ -32,7 +32,7 @@ async function generateQRCodeBuffer(data: string): Promise<Buffer> {
   try {
     const qrCodeBuffer = await QRCode.toBuffer(data, {
       errorCorrectionLevel: 'M',
-      type: 'image/png',
+      type: 'png',
       width: 300,
       margin: 2,
     })
