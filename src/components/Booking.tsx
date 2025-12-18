@@ -19,7 +19,6 @@ export default function Booking() {
     const [submitted, setSubmitted] = useState(false)
     const [registrationId, setRegistrationId] = useState<string | null>(null)
     const [paymentStatus, setPaymentStatus] = useState<'pending' | 'verified' | 'sent'>('pending')
-    const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'payos'>('bank_transfer')
     const [payosPaymentLink, setPayosPaymentLink] = useState<string | null>(null)
     const [creatingPayosLink, setCreatingPayosLink] = useState(false)
     const [loading, setLoading] = useState(false)
@@ -45,16 +44,11 @@ export default function Booking() {
     })
 
     const isConfigured = isSupabaseConfigured()
-    const bankAccount = process.env.NEXT_PUBLIC_BANK_ACCOUNT || '0705413336'
-    const bankName = process.env.NEXT_PUBLIC_BANK_NAME || 'VPBank'
     const eventDate = process.env.NEXT_PUBLIC_EVENT_DATE || '2025-12-28'
     const eventStartTime = process.env.NEXT_PUBLIC_EVENT_START_TIME || '14:00'
     const eventEndTime = process.env.NEXT_PUBLIC_EVENT_END_TIME || '17:00'
     const eventLocation = process.env.NEXT_PUBLIC_EVENT_LOCATION || 'Vibas Coffee - Tân Bình'
     const eventLocationLink = process.env.NEXT_PUBLIC_EVENT_LOCATION_LINK || 'https://maps.app.goo.gl/ePbt2TnvQocTdVs5A'
-    
-    // Tạo nội dung chuyển khoản tự động dựa trên số ghế
-    const transferContent = confirmedSeat ? `workshoptnfvn${confirmedSeat}` : ''
     
     // Format ngày giờ sự kiện
     const formatEventDateTime = () => {
@@ -209,12 +203,9 @@ export default function Booking() {
             if (registrationData.payment_status) {
                 setPaymentStatus(registrationData.payment_status as 'pending' | 'verified' | 'sent')
             }
-            if (registrationData.payment_method) {
-                setPaymentMethod(registrationData.payment_method as 'bank_transfer' | 'payos')
-            }
             
             // If PayOS payment exists, get the payment link
-            if (registrationData.payment_method === 'payos' && registrationData.payos_payment_id) {
+            if (registrationData.payos_payment_id) {
                 try {
                     const { data: payosData, error: payosError } = await (supabase as any)
                         .from('payos_payments')
@@ -469,8 +460,7 @@ export default function Booking() {
                 phone: formData.phone,
                 payment_status: 'pending',
                 seat_number: confirmedSeat,
-                transfer_content: transferContent,
-                payment_method: paymentMethod
+                payment_method: 'payos'
             }
 
             const { data, error } = await supabase
@@ -506,34 +496,32 @@ export default function Booking() {
                 setSubmitted(true)
                 localStorage.setItem('registrationId', data.id)
                 
-                // If PayOS payment method, create payment link
-                if (paymentMethod === 'payos') {
-                    setCreatingPayosLink(true)
-                    try {
-                        const payosResponse = await fetch('/api/payos/create-payment', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                registrationId: data.id,
-                                amount: 5000, // 5K VND (test price)
-                                description: `Workshop - Ghế ${confirmedSeat}` // Max 25 characters for PayOS
-                            })
+                // Tạo link thanh toán PayOS
+                setCreatingPayosLink(true)
+                try {
+                    const payosResponse = await fetch('/api/payos/create-payment', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            registrationId: data.id,
+                            amount: 5000, // 5K VND
+                            description: `Workshop - Ghế ${confirmedSeat}` // Max 25 characters for PayOS
                         })
-                        
-                        const payosResult = await payosResponse.json()
-                        
-                        if (!payosResponse.ok) {
-                            throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
-                        }
-                        
-                        setPayosPaymentLink(payosResult.paymentLink)
-                    } catch (err: any) {
-                        console.error('Error creating PayOS payment:', err)
-                        setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
-                        setTimeout(() => setErrorMessage(null), 5000)
-                    } finally {
-                        setCreatingPayosLink(false)
+                    })
+                    
+                    const payosResult = await payosResponse.json()
+                    
+                    if (!payosResponse.ok) {
+                        throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
                     }
+                    
+                    setPayosPaymentLink(payosResult.paymentLink)
+                } catch (err: any) {
+                    console.error('Error creating PayOS payment:', err)
+                    setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
+                    setTimeout(() => setErrorMessage(null), 5000)
+                } finally {
+                    setCreatingPayosLink(false)
                 }
                 
                 // Gửi thông báo cho staff (không block UI nếu có lỗi)
@@ -548,7 +536,7 @@ export default function Booking() {
                             email: formData.email,
                             phone: formData.phone,
                             seat_number: confirmedSeat,
-                            payment_method: paymentMethod
+                            payment_method: 'payos'
                         }),
                     })
                     
@@ -733,57 +721,57 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                         )}
 
                         {submitted && registrationId && !showQRModal && (
-                            <div className={`mt-6 rounded-md p-4 ${
-                                paymentStatus === 'verified' || paymentStatus === 'sent' 
-                                    ? 'bg-green-50 border-2 border-green-400' 
-                                    : 'bg-green-50 border border-green-200'
-                            }`}>
-                                <div className="flex items-center justify-between flex-wrap gap-3">
-                                    <div className="flex items-center flex-1 min-w-0">
-                                        <svg className={`w-5 h-5 mr-2 flex-shrink-0 ${
-                                            paymentStatus === 'verified' || paymentStatus === 'sent'
-                                                ? 'text-green-600'
-                                                : 'text-green-600'
-                                        }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div className="min-w-0">
-                                            <p className={`text-sm font-medium ${
-                                                paymentStatus === 'verified' || paymentStatus === 'sent'
-                                                    ? 'text-green-800'
-                                                    : 'text-green-800'
-                                            }`}>
-                                                {paymentStatus === 'verified' || paymentStatus === 'sent' 
-                                                    ? '✓ Thanh toán đã được xác nhận!' 
-                                                    : 'Bạn đã đăng ký thành công'}
-                                            </p>
-                                            <p className={`text-xs ${
-                                                paymentStatus === 'verified' || paymentStatus === 'sent'
-                                                    ? 'text-green-700 font-medium'
-                                                    : 'text-green-600'
-                                            }`}>
-                                                {paymentStatus === 'pending' 
-                                                    ? 'Trạng thái: Đang chờ xác nhận' 
-                                                    : paymentStatus === 'verified' 
-                                                        ? 'Mã QR check-in đang được gửi đến email của bạn' 
-                                                        : 'Mã QR check-in đã được gửi! Vui lòng kiểm tra email'}
-                                            </p>
+                            <>
+                                {paymentStatus === 'verified' || paymentStatus === 'sent' ? (
+                                    <div className="mt-6 rounded-md p-4 bg-green-50 border-2 border-green-400">
+                                        <div className="flex items-center justify-between flex-wrap gap-3">
+                                            <div className="flex items-center flex-1 min-w-0">
+                                                <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                </svg>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-green-800">
+                                                        ✓ Thanh toán đã được xác nhận!
+                                                    </p>
+                                                    <p className="text-xs text-green-700 font-medium">
+                                                        {paymentStatus === 'verified' 
+                                                            ? 'Mã QR check-in đang được gửi đến email của bạn' 
+                                                            : 'Mã QR check-in đã được gửi! Vui lòng kiểm tra email'}
+                                                    </p>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setShowQRModal(true)
-                                            checkPaymentStatus(registrationId)
-                                        }}
-                                        className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap flex-shrink-0"
-                                    >
-                                        {paymentStatus === 'verified' || paymentStatus === 'sent' 
-                                            ? 'Xem chi tiết' 
-                                            : 'Xem QR thanh toán'}
-                                    </button>
-                                </div>
-                            </div>
+                                ) : (
+                                    <div className="mt-6 rounded-md p-4 bg-green-50 border border-green-200">
+                                        <div className="flex items-center justify-between flex-wrap gap-3">
+                                            <div className="flex items-center flex-1 min-w-0">
+                                                <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                </svg>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-green-800">
+                                                        Bạn đã đăng ký thành công
+                                                    </p>
+                                                    <p className="text-xs text-green-600">
+                                                        Vui lòng thanh toán để hoàn tất đăng ký
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowQRModal(true)
+                                                    checkPaymentStatus(registrationId)
+                                                }}
+                                                className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap flex-shrink-0"
+                                            >
+                                                Thanh toán
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
                         )}
                     </div>
                 </div>
@@ -949,43 +937,6 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                 )}
                             </div>
 
-                            <div>
-                                <label className="block text-sm font-medium text-black mb-3">
-                                    Phương thức thanh toán *
-                                </label>
-                                <div className="space-y-3">
-                                    <label className="flex items-center p-4 border-2 rounded-md cursor-pointer transition-colors hover:bg-gray-50"
-                                        style={{ borderColor: paymentMethod === 'bank_transfer' ? '#000' : '#e5e7eb' }}>
-                                        <input
-                                            type="radio"
-                                            name="payment_method"
-                                            value="bank_transfer"
-                                            checked={paymentMethod === 'bank_transfer'}
-                                            onChange={(e) => setPaymentMethod(e.target.value as 'bank_transfer' | 'payos')}
-                                            className="mr-3 w-4 h-4 text-black focus:ring-black"
-                                        />
-                                        <div className="flex-1">
-                                            <div className="font-medium text-black">Chuyển khoản ngân hàng</div>
-                                            <div className="text-sm text-gray-600">Chuyển khoản qua QR Code hoặc số tài khoản</div>
-                                        </div>
-                                    </label>
-                                    <label className="flex items-center p-4 border-2 rounded-md cursor-pointer transition-colors hover:bg-gray-50"
-                                        style={{ borderColor: paymentMethod === 'payos' ? '#000' : '#e5e7eb' }}>
-                                        <input
-                                            type="radio"
-                                            name="payment_method"
-                                            value="payos"
-                                            checked={paymentMethod === 'payos'}
-                                            onChange={(e) => setPaymentMethod(e.target.value as 'bank_transfer' | 'payos')}
-                                            className="mr-3 w-4 h-4 text-black focus:ring-black"
-                                        />
-                                        <div className="flex-1">
-                                            <div className="font-medium text-black">Thanh toán qua PayOS</div>
-                                            <div className="text-sm text-gray-600">Thanh toán nhanh qua cổng PayOS</div>
-                                        </div>
-                                    </label>
-                                </div>
-                            </div>
 
                             <button
                                 type="submit"
@@ -1015,19 +966,17 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                             </button>
                         </div>
 
-                        <div className="text-center mb-6">
-                            <div className="inline-flex items-center justify-center w-16 h-16 bg-black rounded-full mb-4">
-                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
+                        {paymentStatus !== 'verified' && (
+                            <div className="text-center mb-6">
+                                <div className="inline-flex items-center justify-center w-16 h-16 bg-green-600 rounded-full mb-4">
+                                    <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-xl font-bold text-black mb-2">Xác nhận thanh toán</h3>
+                                <p className="text-gray-600">Vui lòng thanh toán qua PayOS</p>
                             </div>
-                            <h3 className="text-xl font-bold text-black mb-2">Đăng ký thành công!</h3>
-                            <p className="text-gray-600">
-                                {paymentMethod === 'payos' 
-                                    ? 'Vui lòng thanh toán qua PayOS' 
-                                    : 'Vui lòng chuyển khoản theo thông tin bên dưới'}
-                            </p>
-                        </div>
+                        )}
 
                         {creatingPayosLink && (
                             <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -1041,182 +990,72 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                             </div>
                         )}
 
-                        <div className="space-y-6">
-                            {(() => {
-                                if (paymentMethod === 'payos' && payosPaymentLink) {
-                                    return (
-                                        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-                                            <h4 className="text-lg font-semibold text-black mb-4">Thanh toán qua PayOS</h4>
-                                            <div className="space-y-4">
-                                                <div className="bg-white rounded-lg p-4 border border-gray-200">
-                                                    <p className="text-sm text-gray-600 mb-2">Nhấn vào nút bên dưới để thanh toán:</p>
-                                                    <a
-                                                        href={payosPaymentLink}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="block w-full bg-green-600 text-white py-3 px-4 rounded-md font-medium hover:bg-green-700 transition-colors text-center"
-                                                    >
-                                                        Thanh toán qua PayOS
-                                                    </a>
-                                                </div>
-                                                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                                                    <p className="text-sm text-yellow-800">
-                                                        <strong>Lưu ý:</strong> Sau khi thanh toán thành công, hệ thống sẽ tự động cập nhật trạng thái và gửi mã QR check-in qua email.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )
-                                } else if (paymentMethod === 'payos') {
-                                    return (
-                                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                                            <p className="text-red-800 text-sm">
-                                                Không thể tạo link thanh toán PayOS. Vui lòng thử lại hoặc chọn phương thức chuyển khoản ngân hàng.
-                                            </p>
-                                        </div>
-                                    )
-                                } else {
-                                    return (
-                                        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-                                            <h4 className="text-lg font-semibold text-black mb-4">Thông tin chuyển khoản</h4>
-                                            <div className="space-y-4">
-                                                <div>
-                                                    <p className="text-sm text-gray-600">Số tài khoản:</p>
-                                                    <p className="text-xl font-bold text-black">{bankAccount}</p>
-                                                </div>
-                                                <div>
-                                                    <p className="text-sm text-gray-600">Ngân hàng:</p>
-                                                    <p className="text-xl font-bold text-black">{bankName}</p>
-                                                </div>
-                                                {transferContent && (
-                                                    <div>
-                                                        <p className="text-sm text-gray-600 mb-2">Nội dung chuyển khoản:</p>
-                                                        <div className="flex items-center gap-2">
-                                                            <p className="text-lg font-bold text-black bg-white px-3 py-2 rounded border border-gray-300 font-mono">
-                                                                {transferContent}
-                                                            </p>
-                                                            <button
-                                                                onClick={async () => {
-                                                                    try {
-                                                                        await navigator.clipboard.writeText(transferContent)
-                                                                        setCopied(true)
-                                                                        setTimeout(() => setCopied(false), 2000)
-                                                                    } catch (err) {
-                                                                        console.error('Failed to copy:', err)
-                                                                    }
-                                                                }}
-                                                                className="p-2 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
-                                                                title="Copy nội dung chuyển khoản"
-                                                            >
-                                                                {copied ? (
-                                                                    <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                                                    </svg>
-                                                                ) : (
-                                                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                                    </svg>
-                                                                )}
-                                                            </button>
-                                                        </div>
-                                                        {copied && (
-                                                            <p className="text-xs text-green-600 mt-1">Đã copy vào clipboard!</p>
-                                                        )}
-                                                    </div>
-                                                )}
-                                                <div className="flex justify-center py-4">
-                                                    <div className="bg-white p-4 rounded-lg border border-gray-200">
-                                                        <Image
-                                                            src="/images/qr.jpg"
-                                                            alt="QR Code thanh toán"
-                                                            width={200}
-                                                            height={200}
-                                                            className="w-[200px] h-[200px] object-contain"
-                                                        />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )
-                                }
-                            })()}
-
-                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                                <p className="text-sm text-gray-800 mb-2">
-                                    <strong>Lưu ý quan trọng:</strong>
-                                </p>
-                                <ul className="text-sm text-gray-800 space-y-1 list-disc list-inside">
-                                    {paymentMethod === 'payos' ? (
-                                        <>
-                                            <li>Nhấn vào nút "Thanh toán qua PayOS" để mở trang thanh toán.</li>
-                                            <li>Sau khi thanh toán thành công, hệ thống sẽ tự động cập nhật và gửi mã QR check-in qua email.</li>
-                                            <li>Nếu gặp vấn đề, vui lòng liên hệ hỗ trợ.</li>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <li>Vui lòng nhập đúng nội dung chuyển khoản: <strong className="font-mono">{transferContent}</strong></li>
-                                            <li>Sau khi chuyển khoản, nhân viên sẽ kiểm tra và gửi mã QR check-in qua email cho bạn.</li>
-                                        </>
-                                    )}
-                                </ul>
+                        {paymentStatus === 'verified' ? (
+                            <div className="bg-green-50 border-2 border-green-400 rounded-lg p-5 mb-6">
+                                <div className="flex items-start">
+                                    <svg className="w-6 h-6 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div className="flex-1">
+                                        <p className="text-green-800 font-semibold text-base mb-1">
+                                            ✓ Thanh toán đã được xác nhận!
+                                        </p>
+                                        <p className="text-green-700 text-sm">
+                                            Mã QR check-in đang được gửi đến email của bạn. Vui lòng kiểm tra hộp thư đến và spam.
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
-
-                            {paymentStatus === 'pending' && (
-                                <div className="text-center">
-                                    <p className="text-gray-600 mb-2">Trạng thái thanh toán: <span className="font-semibold text-yellow-600">Đang chờ xác nhận</span></p>
-                                </div>
-                            )}
-
-                            {paymentStatus === 'verified' && (
-                                <div className="bg-green-50 border-2 border-green-400 rounded-lg p-5">
-                                    <div className="flex items-start">
-                                        <svg className="w-6 h-6 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div className="flex-1">
-                                            <p className="text-green-800 font-semibold text-base mb-1">
-                                                ✓ Thanh toán đã được xác nhận!
-                                            </p>
-                                            <p className="text-green-700 text-sm">
-                                                Mã QR check-in đang được gửi đến email của bạn. Vui lòng kiểm tra hộp thư đến và spam.
-                                            </p>
+                        ) : (
+                            <div className="space-y-6">
+                                {payosPaymentLink ? (
+                                    <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+                                        <h4 className="text-lg font-semibold text-black mb-4">Thanh toán qua PayOS</h4>
+                                        <div className="space-y-4">
+                                            <div className="bg-white rounded-lg p-4 border border-gray-200">
+                                                <p className="text-sm text-gray-600 mb-2">Nhấn vào nút bên dưới để thanh toán:</p>
+                                                <a
+                                                    href={payosPaymentLink}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="block w-full bg-green-600 text-white py-3 px-4 rounded-md font-medium hover:bg-green-700 transition-colors text-center"
+                                                >
+                                                    Thanh toán
+                                                </a>
+                                            </div>
+                                            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                                <p className="text-sm text-yellow-800">
+                                                    <strong>Lưu ý:</strong> Sau khi thanh toán thành công, hệ thống sẽ tự động cập nhật trạng thái và gửi mã QR check-in qua email.
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            )}
-
-                            {paymentStatus === 'sent' && (
-                                <div className="bg-green-50 border-2 border-green-400 rounded-lg p-5">
-                                    <div className="flex items-start">
-                                        <svg className="w-6 h-6 text-green-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div className="flex-1">
-                                            <p className="text-green-800 font-semibold text-base mb-1">
-                                                ✓ Mã QR check-in đã được gửi!
-                                            </p>
-                                            <p className="text-green-700 text-sm">
-                                                Vui lòng kiểm tra email của bạn (bao gồm cả thư mục spam) để nhận mã QR check-in.
-                                            </p>
-                                        </div>
+                                ) : (
+                                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                                        <p className="text-red-800 text-sm">
+                                            Không thể tạo link thanh toán PayOS. Vui lòng thử lại sau.
+                                        </p>
                                     </div>
-                                </div>
-                            )}
+                                )}
+                            </div>
+                        )}
 
-                            <div className="flex gap-3">
+                        <div className="flex gap-3 mt-6">
+                            {paymentStatus !== 'verified' ? (
                                 <button
                                     onClick={handleCancelFromQR}
-                                    className="flex-1 bg-red-600 text-white py-3 rounded-md font-medium hover:bg-red-700 transition-colors"
+                                    className="w-full bg-red-600 text-white py-3 rounded-md font-medium hover:bg-red-700 transition-colors"
                                 >
                                     Hủy vé
                                 </button>
+                            ) : (
                                 <button
                                     onClick={handleCloseQRModal}
-                                    className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-md font-medium hover:bg-gray-300 transition-colors"
+                                    className="w-full bg-gray-200 text-gray-700 py-3 rounded-md font-medium hover:bg-gray-300 transition-colors"
                                 >
                                     Đóng
                                 </button>
-                            </div>
+                            )}
                         </div>
                     </div>
                 </div>
