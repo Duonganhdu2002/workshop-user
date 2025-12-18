@@ -10,21 +10,61 @@ const supabase = createClient(
   supabaseServiceKey || ''
 )
 
+// Validate PayOS environment variables
+const payosClientId = process.env.PAYOS_CLIENT_ID
+const payosApiKey = process.env.PAYOS_API_KEY
+const payosChecksumKey = process.env.PAYOS_CHECKSUM_KEY
+
+if (!payosClientId || !payosApiKey || !payosChecksumKey) {
+  console.error('Missing PayOS environment variables:', {
+    hasClientId: !!payosClientId,
+    hasApiKey: !!payosApiKey,
+    hasChecksumKey: !!payosChecksumKey
+  })
+}
+
 // Initialize PayOS client
-const payOS = new PayOS({
-  clientId: process.env.PAYOS_CLIENT_ID || '',
-  apiKey: process.env.PAYOS_API_KEY || '',
-  checksumKey: process.env.PAYOS_CHECKSUM_KEY || ''
-})
+let payOS: PayOS | null = null
+try {
+  if (payosClientId && payosApiKey && payosChecksumKey) {
+    payOS = new PayOS({
+      clientId: payosClientId,
+      apiKey: payosApiKey,
+      checksumKey: payosChecksumKey
+    })
+  }
+} catch (error) {
+  console.error('Error initializing PayOS client:', error)
+}
 
 export async function POST(request: NextRequest) {
   try {
+    // Check if PayOS is configured
+    if (!payOS) {
+      console.error('PayOS client not initialized. Missing environment variables.')
+      return NextResponse.json(
+        { 
+          error: 'PayOS is not configured. Please check environment variables: PAYOS_CLIENT_ID, PAYOS_API_KEY, PAYOS_CHECKSUM_KEY' 
+        },
+        { status: 500 }
+      )
+    }
+
     const body = await request.json()
     const { registrationId, amount, description } = body
 
     if (!registrationId || !amount) {
       return NextResponse.json(
         { error: 'Missing required fields: registrationId and amount' },
+        { status: 400 }
+      )
+    }
+
+    // Validate amount
+    const amountNum = parseInt(amount)
+    if (isNaN(amountNum) || amountNum <= 0) {
+      return NextResponse.json(
+        { error: 'Invalid amount. Amount must be a positive number' },
         { status: 400 }
       )
     }
@@ -65,16 +105,66 @@ export async function POST(request: NextRequest) {
     }
 
     // Create payment link with PayOS
-    const orderCode = Date.now() // Use timestamp as order code
+    // Use a unique order code (timestamp + random number to avoid collisions)
+    const orderCode = Date.now() + Math.floor(Math.random() * 1000)
+    
+    // Get base URL
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+    
     const paymentData = {
       orderCode: orderCode,
-      amount: parseInt(amount),
+      amount: amountNum,
       description: description || `Thanh toán đăng ký workshop - Ghế số ${registration.seat_number}`,
-      cancelUrl: `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/?payment=cancelled&id=${registrationId}`,
-      returnUrl: `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/?payment=success&id=${registrationId}`
+      cancelUrl: `${baseUrl}/?payment=cancelled&id=${registrationId}`,
+      returnUrl: `${baseUrl}/?payment=success&id=${registrationId}`
     }
 
-    const paymentLinkResponse = await payOS.paymentRequests.create(paymentData)
+    console.log('Creating PayOS payment link with data:', {
+      orderCode: paymentData.orderCode,
+      amount: paymentData.amount,
+      description: paymentData.description,
+      hasClientId: !!payosClientId,
+      hasApiKey: !!payosApiKey,
+      hasChecksumKey: !!payosChecksumKey
+    })
+
+    let paymentLinkResponse
+    try {
+      paymentLinkResponse = await payOS.paymentRequests.create(paymentData)
+    } catch (payosError: any) {
+      console.error('PayOS API error:', {
+        message: payosError?.message,
+        error: payosError,
+        paymentData: {
+          orderCode: paymentData.orderCode,
+          amount: paymentData.amount
+        }
+      })
+      
+      // Provide more specific error messages
+      if (payosError?.message?.includes('signature') || payosError?.message?.includes('checksum')) {
+        return NextResponse.json(
+          { 
+            error: 'PayOS signature error. Please check PAYOS_CHECKSUM_KEY environment variable.',
+            details: payosError.message
+          },
+          { status: 500 }
+        )
+      }
+      
+      if (payosError?.message?.includes('authentication') || payosError?.message?.includes('unauthorized')) {
+        return NextResponse.json(
+          { 
+            error: 'PayOS authentication error. Please check PAYOS_CLIENT_ID and PAYOS_API_KEY environment variables.',
+            details: payosError.message
+          },
+          { status: 500 }
+        )
+      }
+      
+      throw payosError
+    }
 
     if (!paymentLinkResponse || !paymentLinkResponse.checkoutUrl) {
       return NextResponse.json(
@@ -89,7 +179,7 @@ export async function POST(request: NextRequest) {
       .insert({
         registration_id: registrationId,
         payos_code: paymentLinkResponse.orderCode.toString(),
-        amount: parseInt(amount),
+        amount: amountNum,
         description: paymentData.description,
         payment_link_id: paymentLinkResponse.paymentLinkId,
         payment_link: paymentLinkResponse.checkoutUrl,
@@ -127,10 +217,31 @@ export async function POST(request: NextRequest) {
       payosPaymentId: payosPayment.id
     })
   } catch (error: any) {
-    console.error('Error creating PayOS payment:', error)
+    console.error('Error creating PayOS payment:', {
+      message: error?.message,
+      stack: error?.stack,
+      error: error
+    })
+    
+    // Provide more helpful error messages
+    let errorMessage = error?.message || 'Internal server error'
+    let statusCode = 500
+    
+    if (error?.message?.includes('signature') || error?.message?.includes('checksum')) {
+      errorMessage = 'PayOS signature error. Please check PAYOS_CHECKSUM_KEY environment variable.'
+    } else if (error?.message?.includes('authentication') || error?.message?.includes('unauthorized')) {
+      errorMessage = 'PayOS authentication error. Please check PAYOS_CLIENT_ID and PAYOS_API_KEY environment variables.'
+    } else if (error?.message?.includes('network') || error?.message?.includes('fetch')) {
+      errorMessage = 'Network error connecting to PayOS. Please try again later.'
+      statusCode = 503
+    }
+    
     return NextResponse.json(
-      { error: error.message || 'Internal server error' },
-      { status: 500 }
+      { 
+        error: errorMessage,
+        details: process.env.NODE_ENV === 'development' ? error?.message : undefined
+      },
+      { status: statusCode }
     )
   }
 }
