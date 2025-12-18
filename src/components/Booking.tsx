@@ -201,7 +201,14 @@ export default function Booking() {
         if (data) {
             const registrationData = data as any
             if (registrationData.payment_status) {
-                setPaymentStatus(registrationData.payment_status as 'pending' | 'verified' | 'sent')
+                const newPaymentStatus = registrationData.payment_status as 'pending' | 'verified' | 'sent'
+                setPaymentStatus(newPaymentStatus)
+                
+                // Xóa localStorage khi thanh toán thành công
+                if (newPaymentStatus === 'verified' || newPaymentStatus === 'sent') {
+                    localStorage.removeItem('registrationId')
+                    console.log('Payment successful, cleared localStorage')
+                }
             }
             
             // If PayOS payment exists, get the payment link
@@ -524,37 +531,6 @@ export default function Booking() {
                     setCreatingPayosLink(false)
                 }
                 
-                // Gửi thông báo cho staff (không block UI nếu có lỗi)
-                try {
-                    console.log('Sending notification to staff for registration:', data.id)
-                    const notifyResponse = await fetch('/api/notify-staff', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            registration_id: data.id,
-                            name: formData.name,
-                            email: formData.email,
-                            phone: formData.phone,
-                            seat_number: confirmedSeat,
-                            payment_method: 'payos'
-                        }),
-                    })
-                    
-                    const notifyResult = await notifyResponse.json()
-                    console.log('Notify staff response:', notifyResult)
-                    
-                    if (!notifyResponse.ok) {
-                        console.error('Failed to notify staff:', notifyResult)
-                    } else if (notifyResult.warning) {
-                        console.warn('Staff notification warning:', notifyResult.warning, notifyResult.message)
-                    } else {
-                        console.log('Staff notification sent successfully to', notifyResult.staffCount, 'staff members')
-                    }
-                } catch (err) {
-                    console.error('Error sending notification to staff:', err)
-                    // Không throw error để không block đăng ký
-                }
-                
                 setShowFormModal(false)
                 setShowQRModal(true)
             }
@@ -720,58 +696,26 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                             </div>
                         )}
 
-                        {submitted && registrationId && !showQRModal && (
-                            <>
-                                {paymentStatus === 'verified' || paymentStatus === 'sent' ? (
-                                    <div className="mt-6 rounded-md p-4 bg-green-50 border-2 border-green-400">
-                                        <div className="flex items-center justify-between flex-wrap gap-3">
-                                            <div className="flex items-center flex-1 min-w-0">
-                                                <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                                </svg>
-                                                <div className="min-w-0">
-                                                    <p className="text-sm font-medium text-green-800">
-                                                        ✓ Thanh toán đã được xác nhận!
-                                                    </p>
-                                                    <p className="text-xs text-green-700 font-medium">
-                                                        {paymentStatus === 'verified' 
-                                                            ? 'Mã QR check-in đang được gửi đến email của bạn' 
-                                                            : 'Mã QR check-in đã được gửi! Vui lòng kiểm tra email'}
-                                                    </p>
-                                                </div>
-                                            </div>
+                        {submitted && registrationId && !showQRModal && (paymentStatus === 'verified' || paymentStatus === 'sent') && (
+                            <div className="mt-6 rounded-md p-4 bg-green-50 border-2 border-green-400">
+                                <div className="flex items-center justify-between flex-wrap gap-3">
+                                    <div className="flex items-center flex-1 min-w-0">
+                                        <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-medium text-green-800">
+                                                ✓ Thanh toán đã được xác nhận!
+                                            </p>
+                                            <p className="text-xs text-green-700 font-medium">
+                                                {paymentStatus === 'verified' 
+                                                    ? 'Mã QR check-in đang được gửi đến email của bạn' 
+                                                    : 'Mã QR check-in đã được gửi! Vui lòng kiểm tra email'}
+                                            </p>
                                         </div>
                                     </div>
-                                ) : (
-                                    <div className="mt-6 rounded-md p-4 bg-green-50 border border-green-200">
-                                        <div className="flex items-center justify-between flex-wrap gap-3">
-                                            <div className="flex items-center flex-1 min-w-0">
-                                                <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                                </svg>
-                                                <div className="min-w-0">
-                                                    <p className="text-sm font-medium text-green-800">
-                                                        Bạn đã đăng ký thành công
-                                                    </p>
-                                                    <p className="text-xs text-green-600">
-                                                        Vui lòng thanh toán để hoàn tất đăng ký
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    setShowQRModal(true)
-                                                    checkPaymentStatus(registrationId)
-                                                }}
-                                                className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap flex-shrink-0"
-                                            >
-                                                Thanh toán
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </>
+                                </div>
+                            </div>
                         )}
                     </div>
                 </div>
