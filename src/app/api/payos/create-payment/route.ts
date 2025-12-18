@@ -167,6 +167,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Check for pending payments with same email/phone
+      // Only return payment if status is 'pending' - ignore cancelled/expired payments
       const { data: existingPendingPayments, error: pendingCheckError } = await supabase
         .from('payos_payments')
         .select('*')
@@ -184,6 +185,21 @@ export async function POST(request: NextRequest) {
           payosCode: existingPendingPayments.payos_code,
           payosPaymentId: existingPendingPayments.id
         })
+      }
+      
+      // If no pending payment found, check if there are cancelled/expired payments
+      // This helps with logging but we'll create a new payment anyway
+      const { data: cancelledPayments } = await supabase
+        .from('payos_payments')
+        .select('id, status')
+        .or(`temp_email.eq.${email},temp_phone.eq.${phone}`)
+        .in('status', ['cancelled', 'expired'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      
+      if (cancelledPayments) {
+        console.log('Found cancelled/expired payment for this email/phone, creating new payment')
       }
     }
 

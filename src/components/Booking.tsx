@@ -98,6 +98,7 @@ export default function Booking() {
         }
         
         // Load payosPaymentId từ localStorage nếu không có URL params
+        // checkPaymentStatusByPayosId sẽ tự động xử lý và xóa localStorage nếu payment đã cancelled/expired
         const savedPayosId = localStorage.getItem('payosPaymentId')
         if (savedPayosId) {
             setPayosPaymentId(savedPayosId)
@@ -281,7 +282,8 @@ export default function Booking() {
                 // Nếu payment đã cancelled hoặc expired, reset trạng thái và giải phóng ghế
                 if (payosData.status === 'cancelled' || payosData.status === 'expired') {
                     setPaymentStatus('pending')
-                    setErrorMessage('Bạn đã hủy thanh toán. Vui lòng thanh toán để hoàn tất đăng ký.')
+                    setPayosPaymentLink(null) // Xóa payment link cũ
+                    setErrorMessage('Bạn đã hủy thanh toán. Vui lòng đăng ký lại để tạo link thanh toán mới.')
                     setTimeout(() => setErrorMessage(null), 8000)
                     
                     // Giải phóng ghế nếu có
@@ -297,9 +299,11 @@ export default function Booking() {
                         }).catch(() => {})
                     }
                     
-                    // Reset state
+                    // Reset state hoàn toàn để người dùng có thể đăng ký lại
                     setSubmitted(false)
                     setPayosPaymentId(null)
+                    setConfirmedSeat(null)
+                    setSelectedSeat(null)
                     localStorage.removeItem('payosPaymentId')
                 }
             }
@@ -321,10 +325,15 @@ export default function Booking() {
                 return
             }
             
-            // Nếu payment đã cancelled hoặc expired
+            // Nếu payment đã cancelled hoặc expired, xóa payment link cũ và reset state
             if (payosData.status === 'cancelled' || payosData.status === 'expired') {
                 setPaymentStatus('pending')
-                setPayosPaymentLink(payosData.payment_link || null)
+                setPayosPaymentLink(null) // Không sử dụng payment link cũ
+                setPayosPaymentId(null)
+                setSubmitted(false)
+                localStorage.removeItem('payosPaymentId')
+                setErrorMessage('Thanh toán đã bị hủy hoặc hết hạn. Vui lòng đăng ký lại.')
+                setTimeout(() => setErrorMessage(null), 8000)
                 return
             }
             
