@@ -124,6 +124,17 @@ export async function POST(request: NextRequest) {
       }, { status: 200 })
     }
 
+    // If payment doesn't have registration_id but has temp data, create registration when payment succeeds
+    let registrationId = payosPayment.registration_id
+    const tempData = (payosPayment as any).temp_name && (payosPayment as any).temp_email && (payosPayment as any).temp_phone && (payosPayment as any).temp_seat_number
+      ? {
+          name: (payosPayment as any).temp_name,
+          email: (payosPayment as any).temp_email,
+          phone: (payosPayment as any).temp_phone,
+          seat_number: (payosPayment as any).temp_seat_number
+        }
+      : null
+
     // Update payment status based on webhook data
     let paymentStatus = 'pending'
     if (desc === 'success' || desc === 'SUCCESS') {
@@ -139,8 +150,10 @@ export async function POST(request: NextRequest) {
     // If payment is cancelled or expired, release the seat
     if (paymentStatus === 'cancelled' || paymentStatus === 'expired') {
       const registration = payosPayment.registrations as any
-      if (registration?.seat_number) {
-        const { error: seatReleaseError } = await supabase
+      const seatNum = registration?.seat_number || (payosPayment as any).temp_seat_number
+      
+      if (seatNum) {
+        const seatReleaseQuery = supabase
           .from('seats')
           .update({
             status: 'available',
@@ -149,13 +162,19 @@ export async function POST(request: NextRequest) {
             selected_at: null,
             expires_at: null
           })
-          .eq('seat_number', registration.seat_number)
-          .eq('registration_id', payosPayment.registration_id)
+          .eq('seat_number', seatNum)
+
+        // If we have registration_id, add that condition
+        if (payosPayment.registration_id) {
+          seatReleaseQuery.eq('registration_id', payosPayment.registration_id)
+        }
+
+        const { error: seatReleaseError } = await seatReleaseQuery
 
         if (seatReleaseError) {
           console.error('Error releasing seat after payment cancellation:', seatReleaseError)
         } else {
-          console.log(`Seat ${registration.seat_number} released after payment ${paymentStatus}`)
+          console.log(`Seat ${seatNum} released after payment ${paymentStatus}`)
         }
       }
     }
@@ -180,89 +199,165 @@ export async function POST(request: NextRequest) {
       }, { status: 200 })
     }
 
-    // If payment is successful, update registration payment status and send QR code
+    // If payment is successful, create registration if needed and update payment status
     if (paymentStatus === 'paid') {
-      const registration = payosPayment.registrations as any
-      
-      // Update registration payment status
-      const { error: updateRegError } = await supabase
-        .from('registrations')
-        .update({
-          payment_status: 'verified',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', payosPayment.registration_id)
+      // If no registration exists but we have temp data, create registration now
+      if (!registrationId && tempData) {
+        console.log('Creating registration from temp data:', tempData)
+        
+        // Check for duplicates one more time before creating
+        const { data: existingRegistrations, error: checkError } = await supabase
+          .from('registrations')
+          .select('id, email, phone')
+          .or(`email.eq.${tempData.email},phone.eq.${tempData.phone}`)
+          .limit(1)
 
-      if (updateRegError) {
-        console.error('Error updating registration:', updateRegError)
-        // Don't fail the webhook, payment was recorded
-      } else {
-        console.log('Registration payment status updated to verified')
+        if (checkError && checkError.code !== 'PGRST116') {
+          console.error('Error checking existing registrations:', checkError)
+        }
+
+        if (existingRegistrations && existingRegistrations.length > 0) {
+          console.error('Duplicate registration found, cannot create:', tempData)
+          // Don't fail webhook, but log the issue
+        } else {
+          // Create registration
+          const { data: newRegistration, error: createRegError } = await supabase
+            .from('registrations')
+            .insert({
+              name: tempData.name,
+              email: tempData.email,
+              phone: tempData.phone,
+              seat_number: tempData.seat_number,
+              payment_status: 'verified',
+              payment_method: 'payos'
+            })
+            .select()
+            .single()
+
+          if (createRegError) {
+            console.error('Error creating registration:', createRegError)
+            // Don't fail webhook, payment was successful
+          } else {
+            registrationId = newRegistration.id
+            console.log('Registration created successfully:', registrationId)
+
+            // Update payos_payment with registration_id
+            await supabase
+              .from('payos_payments')
+              .update({
+                registration_id: registrationId
+              })
+              .eq('id', payosPayment.id)
+
+            // Update seat status to 'booked'
+            const { error: seatUpdateError } = await supabase
+              .from('seats')
+              .update({
+                status: 'booked',
+                registration_id: registrationId,
+                selected_by: null,
+                selected_at: null,
+                expires_at: null
+              })
+              .eq('seat_number', tempData.seat_number)
+
+            if (seatUpdateError) {
+              console.error('Error updating seat to booked status:', seatUpdateError)
+            } else {
+              console.log(`Seat ${tempData.seat_number} marked as booked after successful payment`)
+            }
+          }
+        }
       }
 
-      // Update seat status to 'booked' when payment is successful
-      if (registration?.seat_number) {
-        const { error: seatUpdateError } = await supabase
-          .from('seats')
+      // Update registration payment status if registration exists
+      if (registrationId) {
+        const { error: updateRegError } = await supabase
+          .from('registrations')
           .update({
-            status: 'booked',
-            selected_by: null,
-            selected_at: null,
-            expires_at: null
-          })
-          .eq('seat_number', registration.seat_number)
-          .eq('registration_id', payosPayment.registration_id)
-
-        if (seatUpdateError) {
-          console.error('Error updating seat to booked status:', seatUpdateError)
-          // Don't fail the webhook, payment was successful
-        } else {
-          console.log(`Seat ${registration.seat_number} marked as booked after successful payment`)
-        }
-      }
-
-      // Automatically send QR code email to customer
-      try {
-        console.log('Sending QR code email to customer for registration:', payosPayment.registration_id)
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
-          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-        
-        const qrResponse = await fetch(`${baseUrl}/api/send-qr-code`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            registrationId: payosPayment.registration_id
-          })
-        })
-
-        if (!qrResponse.ok) {
-          const qrError = await qrResponse.json().catch(() => ({}))
-          console.error('Failed to send QR code email:', qrError)
-          // Don't fail webhook, payment was successful
-        } else {
-          console.log('QR code email sent successfully to customer')
-        }
-      } catch (err) {
-        console.error('Error sending QR code email:', err)
-        // Don't fail webhook, payment was successful
-      }
-
-      // Send notification to staff
-      try {
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
-          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-        
-        await fetch(`${baseUrl}/api/notify-staff`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            registration_id: payosPayment.registration_id,
+            payment_status: 'verified',
+            payos_payment_id: payosPayment.id,
             payment_method: 'payos',
-            payos_code: code?.toString() || orderCode.toString()
+            updated_at: new Date().toISOString()
           })
-        }).catch(err => console.error('Failed to notify staff:', err))
-      } catch (err) {
-        console.error('Error notifying staff:', err)
+          .eq('id', registrationId)
+
+        if (updateRegError) {
+          console.error('Error updating registration:', updateRegError)
+          // Don't fail the webhook, payment was recorded
+        } else {
+          console.log('Registration payment status updated to verified')
+        }
+
+        // Update seat status to 'booked' when payment is successful (if not already done)
+        const registration = payosPayment.registrations as any
+        const seatNum = registration?.seat_number || tempData?.seat_number
+        
+        if (seatNum) {
+          const { error: seatUpdateError } = await supabase
+            .from('seats')
+            .update({
+              status: 'booked',
+              registration_id: registrationId,
+              selected_by: null,
+              selected_at: null,
+              expires_at: null
+            })
+            .eq('seat_number', seatNum)
+
+          if (seatUpdateError) {
+            console.error('Error updating seat to booked status:', seatUpdateError)
+            // Don't fail the webhook, payment was successful
+          } else {
+            console.log(`Seat ${seatNum} marked as booked after successful payment`)
+          }
+        }
+      }
+
+      // Automatically send QR code email to customer (only if registration exists)
+      if (registrationId) {
+        try {
+          console.log('Sending QR code email to customer for registration:', registrationId)
+          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+            (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+          
+          const qrResponse = await fetch(`${baseUrl}/api/send-qr-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              registrationId: registrationId
+            })
+          })
+
+          if (!qrResponse.ok) {
+            const qrError = await qrResponse.json().catch(() => ({}))
+            console.error('Failed to send QR code email:', qrError)
+            // Don't fail webhook, payment was successful
+          } else {
+            console.log('QR code email sent successfully to customer')
+          }
+        } catch (err) {
+          console.error('Error sending QR code email:', err)
+          // Don't fail webhook, payment was successful
+        }
+
+        // Send notification to staff
+        try {
+          const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+            (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+          
+          await fetch(`${baseUrl}/api/notify-staff`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              registration_id: registrationId,
+              payment_method: 'payos',
+              payos_code: code?.toString() || orderCode.toString()
+            })
+          }).catch(err => console.error('Failed to notify staff:', err))
+        } catch (err) {
+          console.error('Error notifying staff:', err)
+        }
       }
     }
 

@@ -51,11 +51,12 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { registrationId, amount, description } = body
+    // Support both old format (registrationId) and new format (registration data)
+    const { registrationId, name, email, phone, seat_number, amount, description } = body
 
-    if (!registrationId || !amount) {
+    if (!amount) {
       return NextResponse.json(
-        { error: 'Missing required fields: registrationId and amount' },
+        { error: 'Missing required field: amount' },
         { status: 400 }
       )
     }
@@ -69,71 +70,121 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get registration details
-    const { data: registration, error: regError } = await supabase
-      .from('registrations')
-      .select('*')
-      .eq('id', registrationId)
-      .single()
+    let registration: any = null
+    let payosPaymentId: string | null = null
 
-    if (regError || !registration) {
-      return NextResponse.json(
-        { error: 'Registration not found' },
-        { status: 404 }
-      )
-    }
-
-    // Check if PayOS payment already exists for this registration
-    // First check by registration.payos_payment_id
-    if (registration.payos_payment_id) {
-      const { data: existingPayment, error: paymentError } = await supabase
-        .from('payos_payments')
+    // If registrationId is provided (old flow), get registration
+    if (registrationId) {
+      const { data: regData, error: regError } = await supabase
+        .from('registrations')
         .select('*')
-        .eq('id', registration.payos_payment_id)
+        .eq('id', registrationId)
         .single()
 
-      if (!paymentError && existingPayment) {
-        // If payment link is still valid (not expired or cancelled), return existing link
-        if (existingPayment.status === 'pending' && existingPayment.payment_link) {
-          console.log('Returning existing PayOS payment link:', existingPayment.id)
-          return NextResponse.json({
-            paymentLink: existingPayment.payment_link,
-            paymentLinkId: existingPayment.payment_link_id,
-            payosCode: existingPayment.payos_code,
-            payosPaymentId: existingPayment.id
-          })
+      if (regError || !regData) {
+        return NextResponse.json(
+          { error: 'Registration not found' },
+          { status: 404 }
+        )
+      }
+
+      registration = regData
+
+      // Check if PayOS payment already exists for this registration
+      if (registration.payos_payment_id) {
+        const { data: existingPayment, error: paymentError } = await supabase
+          .from('payos_payments')
+          .select('*')
+          .eq('id', registration.payos_payment_id)
+          .single()
+
+        if (!paymentError && existingPayment) {
+          if (existingPayment.status === 'pending' && existingPayment.payment_link) {
+            console.log('Returning existing PayOS payment link:', existingPayment.id)
+            return NextResponse.json({
+              paymentLink: existingPayment.payment_link,
+              paymentLinkId: existingPayment.payment_link_id,
+              payosCode: existingPayment.payos_code,
+              payosPaymentId: existingPayment.id
+            })
+          }
         }
       }
-    }
 
-    // Also check by registration_id directly in case payos_payment_id is not set
-    const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
-      .from('payos_payments')
-      .select('*')
-      .eq('registration_id', registrationId)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+      // Also check by registration_id directly
+      const { data: existingPaymentByRegId, error: paymentByRegError } = await supabase
+        .from('payos_payments')
+        .select('*')
+        .eq('registration_id', registrationId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
 
-    if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
-      console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
-      // Update registration with payos_payment_id if not set
-      if (!registration.payos_payment_id) {
-        await supabase
-          .from('registrations')
-          .update({
-            payos_payment_id: existingPaymentByRegId.id,
-            payment_method: 'payos'
-          })
-          .eq('id', registrationId)
+      if (!paymentByRegError && existingPaymentByRegId && existingPaymentByRegId.payment_link) {
+        console.log('Found existing pending PayOS payment by registration_id:', existingPaymentByRegId.id)
+        if (!registration.payos_payment_id) {
+          await supabase
+            .from('registrations')
+            .update({
+              payos_payment_id: existingPaymentByRegId.id,
+              payment_method: 'payos'
+            })
+            .eq('id', registrationId)
+        }
+        return NextResponse.json({
+          paymentLink: existingPaymentByRegId.payment_link,
+          paymentLinkId: existingPaymentByRegId.payment_link_id,
+          payosCode: existingPaymentByRegId.payos_code,
+          payosPaymentId: existingPaymentByRegId.id
+        })
       }
-      return NextResponse.json({
-        paymentLink: existingPaymentByRegId.payment_link,
-        paymentLinkId: existingPaymentByRegId.payment_link_id,
-        payosCode: existingPaymentByRegId.payos_code,
-        payosPaymentId: existingPaymentByRegId.id
-      })
+    } else {
+      // New flow: registration data provided directly
+      if (!name || !email || !phone || !seat_number) {
+        return NextResponse.json(
+          { error: 'Missing required fields: name, email, phone, and seat_number' },
+          { status: 400 }
+        )
+      }
+
+      // Check for duplicate registrations (already paid)
+      const { data: existingRegistrations, error: checkError } = await supabase
+        .from('registrations')
+        .select('id, email, phone')
+        .or(`email.eq.${email},phone.eq.${phone}`)
+        .limit(1)
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        console.error('Error checking existing registrations:', checkError)
+      }
+
+      if (existingRegistrations && existingRegistrations.length > 0) {
+        return NextResponse.json(
+          { error: 'Email hoặc số điện thoại này đã được sử dụng để đăng ký' },
+          { status: 400 }
+        )
+      }
+
+      // Check for pending payments with same email/phone
+      const { data: existingPendingPayments, error: pendingCheckError } = await supabase
+        .from('payos_payments')
+        .select('*')
+        .or(`temp_email.eq.${email},temp_phone.eq.${phone}`)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!pendingCheckError && existingPendingPayments && existingPendingPayments.payment_link) {
+        console.log('Found existing pending PayOS payment for this email/phone:', existingPendingPayments.id)
+        return NextResponse.json({
+          paymentLink: existingPendingPayments.payment_link,
+          paymentLinkId: existingPendingPayments.payment_link_id,
+          payosCode: existingPendingPayments.payos_code,
+          payosPaymentId: existingPendingPayments.id
+        })
+      }
     }
 
     // Create payment link with PayOS
@@ -146,7 +197,8 @@ export async function POST(request: NextRequest) {
     
     // PayOS requires description to be max 25 characters
     // Create a short description
-    const defaultDescription = `Workshop - Ghế ${registration.seat_number}`
+    const seatNum = registration?.seat_number || seat_number
+    const defaultDescription = `Workshop - Ghế ${seatNum}`
     let paymentDescription = description || defaultDescription
     
     // Truncate to 25 characters if too long
@@ -154,12 +206,13 @@ export async function POST(request: NextRequest) {
       paymentDescription = paymentDescription.substring(0, 22) + '...'
     }
     
+    // Use payosPaymentId for URLs if we have one, otherwise use a placeholder that will be updated
     const paymentData = {
       orderCode: orderCode,
       amount: amountNum,
       description: paymentDescription,
-      cancelUrl: `${baseUrl}/?payment=cancelled&id=${registrationId}`,
-      returnUrl: `${baseUrl}/?payment=success&id=${registrationId}`
+      cancelUrl: `${baseUrl}/?payment=cancelled&payosId=PLACEHOLDER`,
+      returnUrl: `${baseUrl}/?payment=success&payosId=PLACEHOLDER`
     }
 
     console.log('Creating PayOS payment link with data:', {
@@ -227,17 +280,27 @@ export async function POST(request: NextRequest) {
     }
 
     // Save payment information to database
+    const paymentInsertData: any = {
+      registration_id: registrationId || null, // null if using new flow
+      payos_code: paymentLinkResponse.orderCode.toString(),
+      amount: amountNum,
+      description: paymentData.description,
+      payment_link_id: paymentLinkResponse.paymentLinkId,
+      payment_link: paymentLinkResponse.checkoutUrl,
+      status: 'pending'
+    }
+
+    // If using new flow (no registrationId), store temp data
+    if (!registrationId && name && email && phone && seat_number) {
+      paymentInsertData.temp_name = name
+      paymentInsertData.temp_email = email
+      paymentInsertData.temp_phone = phone
+      paymentInsertData.temp_seat_number = seat_number
+    }
+
     const { data: payosPayment, error: insertError } = await supabase
       .from('payos_payments')
-      .insert({
-        registration_id: registrationId,
-        payos_code: paymentLinkResponse.orderCode.toString(),
-        amount: amountNum,
-        description: paymentData.description,
-        payment_link_id: paymentLinkResponse.paymentLinkId,
-        payment_link: paymentLinkResponse.checkoutUrl,
-        status: 'pending'
-      })
+      .insert(paymentInsertData)
       .select()
       .single()
 
@@ -249,18 +312,26 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Update registration with payos_payment_id and payment_method
-    const { error: updateError } = await supabase
-      .from('registrations')
-      .update({
-        payos_payment_id: payosPayment.id,
-        payment_method: 'payos'
-      })
-      .eq('id', registrationId)
+    // Update payment URLs with actual payosPaymentId
+    const updatedCancelUrl = `${baseUrl}/?payment=cancelled&payosId=${payosPayment.id}`
+    const updatedReturnUrl = `${baseUrl}/?payment=success&payosId=${payosPayment.id}`
+    
+    // Note: We can't update PayOS URLs after creation, but we'll handle it in the frontend/webhook
 
-    if (updateError) {
-      console.error('Error updating registration:', updateError)
-      // Don't fail the request, payment link was created successfully
+    // Update registration with payos_payment_id and payment_method (only if registrationId exists)
+    if (registrationId) {
+      const { error: updateError } = await supabase
+        .from('registrations')
+        .update({
+          payos_payment_id: payosPayment.id,
+          payment_method: 'payos'
+        })
+        .eq('id', registrationId)
+
+      if (updateError) {
+        console.error('Error updating registration:', updateError)
+        // Don't fail the request, payment link was created successfully
+      }
     }
 
     return NextResponse.json({
