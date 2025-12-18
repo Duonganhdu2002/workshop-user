@@ -10,6 +10,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@payos/node": "2.0.3",
     "@studio-freight/react-lenis": "^0.0.47",
     "@supabase/supabase-js": "2.50.0",
     "@types/nodemailer": "7.0.4",

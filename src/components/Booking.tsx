@@ -19,6 +19,9 @@ export default function Booking() {
     const [submitted, setSubmitted] = useState(false)
     const [registrationId, setRegistrationId] = useState<string | null>(null)
     const [paymentStatus, setPaymentStatus] = useState<'pending' | 'verified' | 'sent'>('pending')
+    const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'payos'>('bank_transfer')
+    const [payosPaymentLink, setPayosPaymentLink] = useState<string | null>(null)
+    const [creatingPayosLink, setCreatingPayosLink] = useState(false)
     const [loading, setLoading] = useState(false)
     const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
     const [confirmedSeat, setConfirmedSeat] = useState<number | null>(null)
@@ -192,12 +195,40 @@ export default function Booking() {
     const checkPaymentStatus = async (id: string) => {
         const { data, error } = await supabase
             .from('registrations')
-            .select('payment_status')
+            .select('payment_status, payment_method, payos_payment_id')
             .eq('id', id)
             .single()
 
+        if (error) {
+            console.error('Error fetching payment status:', error)
+            return
+        }
+
         if (data) {
-            setPaymentStatus(data.payment_status)
+            const registrationData = data as any
+            if (registrationData.payment_status) {
+                setPaymentStatus(registrationData.payment_status as 'pending' | 'verified' | 'sent')
+            }
+            if (registrationData.payment_method) {
+                setPaymentMethod(registrationData.payment_method as 'bank_transfer' | 'payos')
+            }
+            
+            // If PayOS payment exists, get the payment link
+            if (registrationData.payment_method === 'payos' && registrationData.payos_payment_id) {
+                try {
+                    const { data: payosData, error: payosError } = await (supabase as any)
+                        .from('payos_payments')
+                        .select('payment_link, status')
+                        .eq('id', registrationData.payos_payment_id)
+                        .single()
+                    
+                    if (!payosError && payosData?.payment_link) {
+                        setPayosPaymentLink(payosData.payment_link)
+                    }
+                } catch (err) {
+                    console.error('Error fetching PayOS payment:', err)
+                }
+            }
         }
     }
 
@@ -438,7 +469,8 @@ export default function Booking() {
                 phone: formData.phone,
                 payment_status: 'pending',
                 seat_number: confirmedSeat,
-                transfer_content: transferContent
+                transfer_content: transferContent,
+                payment_method: paymentMethod
             }
 
             const { data, error } = await supabase
@@ -474,6 +506,36 @@ export default function Booking() {
                 setSubmitted(true)
                 localStorage.setItem('registrationId', data.id)
                 
+                // If PayOS payment method, create payment link
+                if (paymentMethod === 'payos') {
+                    setCreatingPayosLink(true)
+                    try {
+                        const payosResponse = await fetch('/api/payos/create-payment', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                registrationId: data.id,
+                                amount: 5000, // 5K VND (test price)
+                                description: `Thanh toán đăng ký workshop - Ghế số ${confirmedSeat}`
+                            })
+                        })
+                        
+                        const payosResult = await payosResponse.json()
+                        
+                        if (!payosResponse.ok) {
+                            throw new Error(payosResult.error || 'Không thể tạo link thanh toán PayOS')
+                        }
+                        
+                        setPayosPaymentLink(payosResult.paymentLink)
+                    } catch (err: any) {
+                        console.error('Error creating PayOS payment:', err)
+                        setErrorMessage('Không thể tạo link thanh toán PayOS: ' + err.message)
+                        setTimeout(() => setErrorMessage(null), 5000)
+                    } finally {
+                        setCreatingPayosLink(false)
+                    }
+                }
+                
                 // Gửi thông báo cho staff (không block UI nếu có lỗi)
                 try {
                     console.log('Sending notification to staff for registration:', data.id)
@@ -486,6 +548,7 @@ export default function Booking() {
                             email: formData.email,
                             phone: formData.phone,
                             seat_number: confirmedSeat,
+                            payment_method: paymentMethod
                         }),
                     })
                     
@@ -580,7 +643,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     <p className="text-sm md:text-base font-medium">
-                                        <span className="font-semibold">Giá vé:</span> 399K
+                                        <span className="font-semibold">Giá vé:</span> 5K
                                     </p>
                                 </div>
                             </div>
@@ -886,6 +949,44 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                 )}
                             </div>
 
+                            <div>
+                                <label className="block text-sm font-medium text-black mb-3">
+                                    Phương thức thanh toán *
+                                </label>
+                                <div className="space-y-3">
+                                    <label className="flex items-center p-4 border-2 rounded-md cursor-pointer transition-colors hover:bg-gray-50"
+                                        style={{ borderColor: paymentMethod === 'bank_transfer' ? '#000' : '#e5e7eb' }}>
+                                        <input
+                                            type="radio"
+                                            name="payment_method"
+                                            value="bank_transfer"
+                                            checked={paymentMethod === 'bank_transfer'}
+                                            onChange={(e) => setPaymentMethod(e.target.value as 'bank_transfer' | 'payos')}
+                                            className="mr-3 w-4 h-4 text-black focus:ring-black"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="font-medium text-black">Chuyển khoản ngân hàng</div>
+                                            <div className="text-sm text-gray-600">Chuyển khoản qua QR Code hoặc số tài khoản</div>
+                                        </div>
+                                    </label>
+                                    <label className="flex items-center p-4 border-2 rounded-md cursor-pointer transition-colors hover:bg-gray-50"
+                                        style={{ borderColor: paymentMethod === 'payos' ? '#000' : '#e5e7eb' }}>
+                                        <input
+                                            type="radio"
+                                            name="payment_method"
+                                            value="payos"
+                                            checked={paymentMethod === 'payos'}
+                                            onChange={(e) => setPaymentMethod(e.target.value as 'bank_transfer' | 'payos')}
+                                            className="mr-3 w-4 h-4 text-black focus:ring-black"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="font-medium text-black">Thanh toán qua PayOS</div>
+                                            <div className="text-sm text-gray-600">Thanh toán nhanh qua cổng PayOS</div>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+
                             <button
                                 type="submit"
                                 disabled={loading}
@@ -921,78 +1022,142 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                 </svg>
                             </div>
                             <h3 className="text-xl font-bold text-black mb-2">Đăng ký thành công!</h3>
-                            <p className="text-gray-600">Vui lòng chuyển khoản theo thông tin bên dưới</p>
+                            <p className="text-gray-600">
+                                {paymentMethod === 'payos' 
+                                    ? 'Vui lòng thanh toán qua PayOS' 
+                                    : 'Vui lòng chuyển khoản theo thông tin bên dưới'}
+                            </p>
                         </div>
 
-                        <div className="space-y-6">
-                            <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-                                <h4 className="text-lg font-semibold text-black mb-4">Thông tin chuyển khoản</h4>
-                                <div className="space-y-4">
-                                    <div>
-                                        <p className="text-sm text-gray-600">Số tài khoản:</p>
-                                        <p className="text-xl font-bold text-black">{bankAccount}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-sm text-gray-600">Ngân hàng:</p>
-                                        <p className="text-xl font-bold text-black">{bankName}</p>
-                                    </div>
-                                    {transferContent && (
-                                        <div>
-                                            <p className="text-sm text-gray-600 mb-2">Nội dung chuyển khoản:</p>
-                                            <div className="flex items-center gap-2">
-                                                <p className="text-lg font-bold text-black bg-white px-3 py-2 rounded border border-gray-300 font-mono">
-                                                    {transferContent}
-                                                </p>
-                                                <button
-                                                    onClick={async () => {
-                                                        try {
-                                                            await navigator.clipboard.writeText(transferContent)
-                                                            setCopied(true)
-                                                            setTimeout(() => setCopied(false), 2000)
-                                                        } catch (err) {
-                                                            console.error('Failed to copy:', err)
-                                                        }
-                                                    }}
-                                                    className="p-2 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
-                                                    title="Copy nội dung chuyển khoản"
-                                                >
-                                                    {copied ? (
-                                                        <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                                        </svg>
-                                                    ) : (
-                                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                        </svg>
-                                                    )}
-                                                </button>
-                                            </div>
-                                            {copied && (
-                                                <p className="text-xs text-green-600 mt-1">Đã copy vào clipboard!</p>
-                                            )}
-                                        </div>
-                                    )}
-                                    <div className="flex justify-center py-4">
-                                        <div className="bg-white p-4 rounded-lg border border-gray-200">
-                                            <Image
-                                                src="/images/qr.jpg"
-                                                alt="QR Code thanh toán"
-                                                width={200}
-                                                height={200}
-                                                className="w-[200px] h-[200px] object-contain"
-                                            />
-                                        </div>
-                                    </div>
+                        {creatingPayosLink && (
+                            <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                <div className="flex items-center">
+                                    <svg className="animate-spin h-5 w-5 text-blue-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <p className="text-blue-800">Đang tạo link thanh toán PayOS...</p>
                                 </div>
                             </div>
+                        )}
+
+                        <div className="space-y-6">
+                            {(() => {
+                                if (paymentMethod === 'payos' && payosPaymentLink) {
+                                    return (
+                                        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+                                            <h4 className="text-lg font-semibold text-black mb-4">Thanh toán qua PayOS</h4>
+                                            <div className="space-y-4">
+                                                <div className="bg-white rounded-lg p-4 border border-gray-200">
+                                                    <p className="text-sm text-gray-600 mb-2">Nhấn vào nút bên dưới để thanh toán:</p>
+                                                    <a
+                                                        href={payosPaymentLink}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="block w-full bg-green-600 text-white py-3 px-4 rounded-md font-medium hover:bg-green-700 transition-colors text-center"
+                                                    >
+                                                        Thanh toán qua PayOS
+                                                    </a>
+                                                </div>
+                                                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                                    <p className="text-sm text-yellow-800">
+                                                        <strong>Lưu ý:</strong> Sau khi thanh toán thành công, hệ thống sẽ tự động cập nhật trạng thái và gửi mã QR check-in qua email.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                } else if (paymentMethod === 'payos') {
+                                    return (
+                                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                                            <p className="text-red-800 text-sm">
+                                                Không thể tạo link thanh toán PayOS. Vui lòng thử lại hoặc chọn phương thức chuyển khoản ngân hàng.
+                                            </p>
+                                        </div>
+                                    )
+                                } else {
+                                    return (
+                                        <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
+                                            <h4 className="text-lg font-semibold text-black mb-4">Thông tin chuyển khoản</h4>
+                                            <div className="space-y-4">
+                                                <div>
+                                                    <p className="text-sm text-gray-600">Số tài khoản:</p>
+                                                    <p className="text-xl font-bold text-black">{bankAccount}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-sm text-gray-600">Ngân hàng:</p>
+                                                    <p className="text-xl font-bold text-black">{bankName}</p>
+                                                </div>
+                                                {transferContent && (
+                                                    <div>
+                                                        <p className="text-sm text-gray-600 mb-2">Nội dung chuyển khoản:</p>
+                                                        <div className="flex items-center gap-2">
+                                                            <p className="text-lg font-bold text-black bg-white px-3 py-2 rounded border border-gray-300 font-mono">
+                                                                {transferContent}
+                                                            </p>
+                                                            <button
+                                                                onClick={async () => {
+                                                                    try {
+                                                                        await navigator.clipboard.writeText(transferContent)
+                                                                        setCopied(true)
+                                                                        setTimeout(() => setCopied(false), 2000)
+                                                                    } catch (err) {
+                                                                        console.error('Failed to copy:', err)
+                                                                    }
+                                                                }}
+                                                                className="p-2 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
+                                                                title="Copy nội dung chuyển khoản"
+                                                            >
+                                                                {copied ? (
+                                                                    <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                                    </svg>
+                                                                ) : (
+                                                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                                    </svg>
+                                                                )}
+                                                            </button>
+                                                        </div>
+                                                        {copied && (
+                                                            <p className="text-xs text-green-600 mt-1">Đã copy vào clipboard!</p>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                <div className="flex justify-center py-4">
+                                                    <div className="bg-white p-4 rounded-lg border border-gray-200">
+                                                        <Image
+                                                            src="/images/qr.jpg"
+                                                            alt="QR Code thanh toán"
+                                                            width={200}
+                                                            height={200}
+                                                            className="w-[200px] h-[200px] object-contain"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                }
+                            })()}
 
                             <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                                 <p className="text-sm text-gray-800 mb-2">
                                     <strong>Lưu ý quan trọng:</strong>
                                 </p>
                                 <ul className="text-sm text-gray-800 space-y-1 list-disc list-inside">
-                                    <li>Vui lòng nhập đúng nội dung chuyển khoản: <strong className="font-mono">{transferContent}</strong></li>
-                                    <li>Sau khi chuyển khoản, nhân viên sẽ kiểm tra và gửi mã QR check-in qua email cho bạn.</li>
+                                    {paymentMethod === 'payos' ? (
+                                        <>
+                                            <li>Nhấn vào nút "Thanh toán qua PayOS" để mở trang thanh toán.</li>
+                                            <li>Sau khi thanh toán thành công, hệ thống sẽ tự động cập nhật và gửi mã QR check-in qua email.</li>
+                                            <li>Nếu gặp vấn đề, vui lòng liên hệ hỗ trợ.</li>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <li>Vui lòng nhập đúng nội dung chuyển khoản: <strong className="font-mono">{transferContent}</strong></li>
+                                            <li>Sau khi chuyển khoản, nhân viên sẽ kiểm tra và gửi mã QR check-in qua email cho bạn.</li>
+                                        </>
+                                    )}
                                 </ul>
                             </div>
 
