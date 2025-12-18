@@ -30,23 +30,78 @@ export async function GET(request: NextRequest) {
 
 // Handle POST request for actual webhook notifications
 export async function POST(request: NextRequest) {
+  // Always return 200 OK to PayOS to prevent retries
+  // Log errors but don't fail the webhook
   try {
-    const body = await request.json()
-    
-    // Verify webhook signature
-    const webhookData = await payOS.webhooks.verify(body)
-
-    if (!webhookData) {
-      return NextResponse.json(
-        { error: 'Invalid webhook signature' },
-        { status: 400 }
-      )
+    let body: any
+    try {
+      body = await request.json()
+    } catch (parseError) {
+      console.error('Error parsing webhook body:', parseError)
+      // Return 200 even if parsing fails to prevent PayOS retries
+      return NextResponse.json({
+        success: false,
+        message: 'Invalid JSON body',
+        error: parseError instanceof Error ? parseError.message : 'Unknown error'
+      }, { status: 200 })
     }
 
-    // Extract data from webhook
-    const orderCode = webhookData.orderCode
-    const code = webhookData.code || orderCode.toString()
-    const desc = webhookData.desc
+    console.log('Received PayOS webhook:', JSON.stringify(body, null, 2))
+    
+    // Verify webhook signature
+    let webhookData: any = null
+    try {
+      webhookData = await payOS.webhooks.verify(body)
+    } catch (verifyError) {
+      console.error('Error verifying webhook signature:', verifyError)
+      // Return 200 but log the error
+      return NextResponse.json({
+        success: false,
+        message: 'Webhook verification failed',
+        error: verifyError instanceof Error ? verifyError.message : 'Unknown error'
+      }, { status: 200 })
+    }
+
+    if (!webhookData) {
+      console.error('Webhook verification returned null/undefined')
+      return NextResponse.json({
+        success: false,
+        message: 'Invalid webhook signature'
+      }, { status: 200 })
+    }
+
+    // Extract data from webhook - PayOS may send data in different formats
+    // Try multiple possible locations for orderCode
+    const orderCode = webhookData.orderCode || 
+                     webhookData.data?.orderCode || 
+                     webhookData.order_code ||
+                     body.orderCode ||
+                     body.data?.orderCode ||
+                     body.order_code
+    
+    const code = webhookData.code || 
+                 webhookData.data?.code || 
+                 body.code ||
+                 orderCode?.toString()
+    
+    const desc = webhookData.desc || 
+                 webhookData.data?.desc || 
+                 webhookData.description ||
+                 body.desc ||
+                 body.description
+
+    if (!orderCode) {
+      console.error('Missing orderCode in webhook data. Full webhook data:', JSON.stringify({
+        webhookData,
+        body
+      }, null, 2))
+      return NextResponse.json({
+        success: false,
+        message: 'Missing orderCode in webhook data'
+      }, { status: 200 })
+    }
+
+    console.log(`Processing webhook for orderCode: ${orderCode}, desc: ${desc}`)
 
     // Find the payment record
     const { data: payosPayment, error: paymentError } = await supabase
@@ -56,22 +111,30 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (paymentError || !payosPayment) {
-      console.error('PayOS payment not found:', code)
-      return NextResponse.json(
-        { error: 'Payment not found' },
-        { status: 404 }
-      )
+      console.error('PayOS payment not found:', {
+        orderCode: orderCode.toString(),
+        error: paymentError,
+        code
+      })
+      // Return 200 but log the error
+      return NextResponse.json({
+        success: false,
+        message: 'Payment not found',
+        orderCode: orderCode.toString()
+      }, { status: 200 })
     }
 
     // Update payment status based on webhook data
     let paymentStatus = 'pending'
-    if (desc === 'success') {
+    if (desc === 'success' || desc === 'SUCCESS') {
       paymentStatus = 'paid'
-    } else if (desc === 'cancelled') {
+    } else if (desc === 'cancelled' || desc === 'CANCELLED') {
       paymentStatus = 'cancelled'
-    } else if (desc === 'expired') {
+    } else if (desc === 'expired' || desc === 'EXPIRED') {
       paymentStatus = 'expired'
     }
+
+    console.log(`Updating payment status to: ${paymentStatus}`)
 
     // Update payment record
     const { error: updatePaymentError } = await supabase
@@ -85,10 +148,12 @@ export async function POST(request: NextRequest) {
 
     if (updatePaymentError) {
       console.error('Error updating payment:', updatePaymentError)
-      return NextResponse.json(
-        { error: 'Failed to update payment' },
-        { status: 500 }
-      )
+      // Return 200 but log the error
+      return NextResponse.json({
+        success: false,
+        message: 'Failed to update payment',
+        error: updatePaymentError.message
+      }, { status: 200 })
     }
 
     // If payment is successful, update registration payment status and send QR code
@@ -107,12 +172,17 @@ export async function POST(request: NextRequest) {
       if (updateRegError) {
         console.error('Error updating registration:', updateRegError)
         // Don't fail the webhook, payment was recorded
+      } else {
+        console.log('Registration payment status updated to verified')
       }
 
       // Automatically send QR code email to customer
       try {
         console.log('Sending QR code email to customer for registration:', payosPayment.registration_id)
-        const qrResponse = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/send-qr-code`, {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+        
+        const qrResponse = await fetch(`${baseUrl}/api/send-qr-code`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -134,13 +204,16 @@ export async function POST(request: NextRequest) {
 
       // Send notification to staff
       try {
-        await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/notify-staff`, {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+        
+        await fetch(`${baseUrl}/api/notify-staff`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             registration_id: payosPayment.registration_id,
             payment_method: 'payos',
-            payos_code: code.toString()
+            payos_code: code?.toString() || orderCode.toString()
           })
         }).catch(err => console.error('Failed to notify staff:', err))
       } catch (err) {
@@ -148,16 +221,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log('Webhook processed successfully')
     return NextResponse.json({
       success: true,
-      message: 'Webhook processed successfully'
-    })
+      message: 'Webhook processed successfully',
+      orderCode: orderCode.toString(),
+      status: paymentStatus
+    }, { status: 200 })
   } catch (error: any) {
-    console.error('Error processing PayOS webhook:', error)
-    return NextResponse.json(
-      { error: error.message || 'Internal server error' },
-      { status: 500 }
-    )
+    console.error('Unexpected error processing PayOS webhook:', error)
+    // Always return 200 to prevent PayOS retries
+    return NextResponse.json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message || 'Unknown error'
+    }, { status: 200 })
   }
 }
 
