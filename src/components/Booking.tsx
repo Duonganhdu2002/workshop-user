@@ -989,39 +989,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key`}
                                             </div>
                                         </div>
                                     </div>
-                                ) : (
-                                    <div className="mt-6 rounded-md p-4 bg-green-50 border border-green-200">
-                                        <div className="flex items-center justify-between flex-wrap gap-3">
-                                            <div className="flex items-center flex-1 min-w-0">
-                                                <svg className="w-5 h-5 mr-2 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                                </svg>
-                                                <div className="min-w-0">
-                                                    <p className="text-sm font-medium text-green-800">
-                                                        Đã tạo link thanh toán
-                                                    </p>
-                                                    <p className="text-xs text-green-600">
-                                                        Vui lòng thanh toán để hoàn tất đăng ký
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    setShowQRModal(true)
-                                                    if (payosPaymentId) {
-                                                        checkPaymentStatusByPayosId(payosPaymentId)
-                                                    } else if (registrationId) {
-                                                        checkPaymentStatus(registrationId)
-                                                    }
-                                                }}
-                                                className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap flex-shrink-0"
-                                            >
-                                                Thanh toán
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
+                                ) : null}
                             </>
                         )}
                     </div>
